@@ -651,7 +651,8 @@ fn build_hint_engine(
 #[cfg(windows)]
 fn refresh_engine_for_layout(runtime: &mut Runtime, config: &Config) {
     let current = jumpkey::windows::keyboard_layout::capture_active_layout();
-    if config.keyboard.layout != jumpkey::LayoutChoice::Auto || current == runtime.engine_layout_id {
+    if config.keyboard.layout != jumpkey::LayoutChoice::Auto || current == runtime.engine_layout_id
+    {
         return;
     }
     let (engine, id) = build_hint_engine(&config.hints, &config.keyboard);
