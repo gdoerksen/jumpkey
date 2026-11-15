@@ -20,7 +20,7 @@ use crate::model::Element;
 #[serde(rename_all = "snake_case")]
 pub enum HintOrder {
     /// Center of the scanned area (the foreground window in active-window
-    /// scope, the cursor's monitor in active-monitor scope).
+    /// scope, the focused window's monitor in active-monitor scope).
     #[default]
     Center,
     /// The mouse cursor position at the moment the picker opens.

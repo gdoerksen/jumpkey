@@ -147,7 +147,7 @@ unsafe fn describe(hwnd: HWND) -> Option<TopLevelWindow> {
 
     // Skip the desktop shell and worker windows.
     let class = window_class_name(hwnd);
-    if matches!(class.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
+    if is_shell_class(&class) {
         tracing::trace!(?hwnd, class = %class, "skipped: shell class");
         return None;
     }
@@ -205,6 +205,20 @@ unsafe fn window_title(hwnd: HWND) -> String {
         return String::new();
     }
     String::from_utf16_lossy(&buf[..len as usize])
+}
+
+/// True for the desktop shell's own windows: the desktop (`Progman`,
+/// `WorkerW`) and the taskbar (`Shell_TrayWnd`). These are never pick
+/// targets, and when one of them has focus there is no meaningful
+/// "active window".
+pub(crate) fn is_shell_class(class: &str) -> bool {
+    matches!(class, "Progman" | "WorkerW" | "Shell_TrayWnd")
+}
+
+/// True when `hwnd` is one of the desktop shell's windows (see
+/// [`is_shell_class`]).
+pub(crate) unsafe fn is_shell_window(hwnd: HWND) -> bool {
+    is_shell_class(&window_class_name(hwnd))
 }
 
 unsafe fn window_class_name(hwnd: HWND) -> String {

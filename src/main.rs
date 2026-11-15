@@ -681,7 +681,10 @@ fn handle_pick_element(
     backend: &mut jumpkey::windows::WindowsBackend,
     runtime: &Runtime,
 ) -> anyhow::Result<()> {
-    let mut elements: Vec<Element> = backend.enumerate_by_scope(runtime.scope_mode)?;
+    // Snapshot focus / cursor / active monitor once so enumeration and
+    // label ordering agree even if focus moves during the UIA walk.
+    let ctx = jumpkey::windows::PickContext::capture();
+    let mut elements: Vec<Element> = backend.enumerate_by_scope(runtime.scope_mode, &ctx)?;
     if elements.is_empty() {
         tracing::info!("no interactable elements in foreground window");
         return Ok(());
@@ -691,7 +694,7 @@ fn handle_pick_element(
     // (window center / cursor). Sorting `elements` itself keeps
     // `elements[result.index]` below pointing at the right element.
     if let Some(anchor) =
-        jumpkey::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &elements)
+        jumpkey::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &ctx, &elements)
     {
         jumpkey::layout_order::sort_by_proximity(&mut elements, anchor);
     }

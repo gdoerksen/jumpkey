@@ -318,37 +318,47 @@ impl WindowsBackend {
     ///
     /// - [`ScopeMode::ActiveWindow`] is exactly [`Backend::enumerate_foreground`].
     /// - [`ScopeMode::ActiveMonitor`] enumerates every visible top-level
-    ///   window whose frame intersects the monitor under the cursor.
+    ///   window whose frame overlaps [`PickContext::active_monitor`]
+    ///   (the focused window's monitor; see [`resolve_active_monitor`]).
     /// - [`ScopeMode::AllWindows`] enumerates every visible top-level
     ///   window across all monitors.
+    ///
+    /// `ctx` is the snapshot of focus / cursor / monitor taken once at
+    /// the start of the pick, so enumeration and hint ordering agree
+    /// even if focus changes during the (slow) UIA walk.
     ///
     /// Multi-window modes aggregate per-window walks and apply the
     /// [`Self::max_elements_global`] cap so a busy desktop can't render
     /// thousands of badges. The cap is enforced in walk order, so the
     /// foreground window's elements are always present.
-    pub fn enumerate_by_scope(&mut self, mode: ScopeMode) -> anyhow::Result<Vec<Element>> {
+    pub fn enumerate_by_scope(
+        &mut self,
+        mode: ScopeMode,
+        ctx: &PickContext,
+    ) -> anyhow::Result<Vec<Element>> {
         match mode {
             ScopeMode::ActiveWindow => self.enumerate_foreground(),
-            ScopeMode::ActiveMonitor => self.enumerate_active_monitor(),
-            ScopeMode::AllWindows => self.enumerate_all_windows(),
+            ScopeMode::ActiveMonitor => self.enumerate_active_monitor(ctx),
+            ScopeMode::AllWindows => self.enumerate_windows_filtered(ctx.foreground, |_| true),
         }
     }
 
-    fn enumerate_active_monitor(&mut self) -> anyhow::Result<Vec<Element>> {
-        let monitor_rect = current_monitor_rect();
+    fn enumerate_active_monitor(&mut self, ctx: &PickContext) -> anyhow::Result<Vec<Element>> {
+        // No resolvable monitor → overshoot to every window rather than
+        // refuse to enumerate anything.
+        let Some(monitor_rect) = ctx.active_monitor else {
+            tracing::warn!("active monitor unresolved; falling back to all windows");
+            return self.enumerate_windows_filtered(ctx.foreground, |_| true);
+        };
         // Phase 5: tightened prune. The previous "any pixel overlaps"
-        // check pulled in windows that just barely touched the cursor
+        // check pulled in windows that just barely touched the active
         // monitor (e.g. a sliver of an off-screen Slack window),
         // wasting a UIA walk per spurious match. Requiring 10% area
         // overlap drops those without losing any window the user
         // would actually consider "on this monitor".
-        self.enumerate_windows_filtered(|bounds| {
+        self.enumerate_windows_filtered(ctx.foreground, |bounds| {
             rect_overlap_fraction(&monitor_rect, bounds) >= 0.10
         })
-    }
-
-    fn enumerate_all_windows(&mut self) -> anyhow::Result<Vec<Element>> {
-        self.enumerate_windows_filtered(|_| true)
     }
 
     /// Shared implementation behind the multi-window scope modes.
@@ -370,7 +380,11 @@ impl WindowsBackend {
     /// `tracing` warning — better to return what we did manage to
     /// enumerate than abort the whole pick because one tab's UIA
     /// tree was unhealthy.
-    fn enumerate_windows_filtered<F>(&mut self, mut accept: F) -> anyhow::Result<Vec<Element>>
+    fn enumerate_windows_filtered<F>(
+        &mut self,
+        foreground: HWND,
+        mut accept: F,
+    ) -> anyhow::Result<Vec<Element>>
     where
         F: FnMut(&Bounds) -> bool,
     {
@@ -379,7 +393,6 @@ impl WindowsBackend {
         let candidates = crate::windows::window_picker::enumerate_visible()
             .context("listing top-level windows for multi-window scope")?;
         let cap = self.max_elements_global;
-        let foreground = unsafe { GetForegroundWindow() };
 
         // Filter + group by pid. BTreeMap so iteration order is stable
         // across runs (helpful for test reproducibility and for
@@ -774,77 +787,146 @@ fn hwnd_to_key(hwnd: HWND) -> WindowKey {
     hwnd.0 as usize as u64
 }
 
+/// Snapshot of "where the user is" taken once at the start of an
+/// element pick. Enumeration ([`WindowsBackend::enumerate_by_scope`])
+/// and label ordering ([`hint_anchor`]) both read from it, so they
+/// can't disagree if focus or the cursor moves during the UIA walk.
+#[derive(Debug, Clone, Copy)]
+pub struct PickContext {
+    /// Foreground window at capture time. May be null.
+    pub foreground: HWND,
+    /// Cursor position in physical screen pixels, if it could be read.
+    pub cursor: Option<(i32, i32)>,
+    /// The monitor that [`ScopeMode::ActiveMonitor`] targets, resolved
+    /// by [`resolve_active_monitor`]. `None` when no monitor could be
+    /// determined; callers treat that as "no monitor constraint".
+    pub active_monitor: Option<RECT>,
+}
+
+impl PickContext {
+    /// Read the foreground window, cursor and monitors from Win32 and
+    /// resolve the active monitor.
+    pub fn capture() -> Self {
+        use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONULL};
+
+        // SAFETY: these Win32 queries have no preconditions; every
+        // failure is mapped to `None` / a null handle and handled below.
+        unsafe {
+            let foreground = GetForegroundWindow();
+            let mut pt = POINT { x: 0, y: 0 };
+            let cursor = GetCursorPos(&mut pt).ok().map(|_| (pt.x, pt.y));
+
+            let has_foreground = !foreground.0.is_null();
+            let fg_is_shell = has_foreground && window_picker::is_shell_window(foreground);
+            let fg_monitor = if has_foreground && !fg_is_shell {
+                monitor_rect(MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL))
+            } else {
+                None
+            };
+            let cursor_monitor = cursor.and_then(|(x, y)| {
+                monitor_rect(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST))
+            });
+
+            Self {
+                foreground,
+                cursor,
+                active_monitor: resolve_active_monitor(fg_monitor, fg_is_shell, cursor_monitor),
+            }
+        }
+    }
+}
+
+/// Pick the monitor [`ScopeMode::ActiveMonitor`] should target.
+///
+/// The focused window's monitor wins, so picking a window on another
+/// screen (window picker, Alt+Tab, a click) moves the scope with it
+/// even though the mouse stayed put. When the desktop shell has focus
+/// (e.g. after Win+D) there is no meaningful focused window, so the
+/// monitor under the cursor is used instead, as it is when the
+/// foreground monitor can't be resolved at all.
+pub fn resolve_active_monitor(
+    fg_monitor: Option<RECT>,
+    fg_is_shell: bool,
+    cursor_monitor: Option<RECT>,
+) -> Option<RECT> {
+    if fg_is_shell {
+        return cursor_monitor;
+    }
+    fg_monitor.or(cursor_monitor)
+}
+
+/// Full rect (physical pixels) of `monitor`, or `None` for a null
+/// handle / failed `GetMonitorInfoW`.
+unsafe fn monitor_rect(monitor: windows::Win32::Graphics::Gdi::HMONITOR) -> Option<RECT> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+
+    if monitor.is_invalid() {
+        return None;
+    }
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    GetMonitorInfoW(monitor, &mut mi)
+        .as_bool()
+        .then_some(mi.rcMonitor)
+}
+
+fn rect_center(r: &RECT) -> (i32, i32) {
+    ((r.left + r.right) / 2, (r.top + r.bottom) / 2)
+}
+
+/// `point` if it lies inside `rect` (right/bottom exclusive), else the
+/// center of `rect`. Keeps cursor-ordered labels on the active monitor
+/// when the pointer has been left on another screen.
+fn anchor_in_or_center(point: (i32, i32), rect: &RECT) -> (i32, i32) {
+    let (x, y) = point;
+    if x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom {
+        point
+    } else {
+        rect_center(rect)
+    }
+}
+
 /// Resolve the point the element picker's shortest labels should
 /// radiate out from. Returns `None` for [`HintOrder::Reading`] (keep
 /// enumeration order). Any Win32 failure falls back to the center of
 /// the elements' combined bounding box.
-pub fn hint_anchor(order: HintOrder, scope: ScopeMode, elements: &[Element]) -> Option<(i32, i32)> {
+pub fn hint_anchor(
+    order: HintOrder,
+    scope: ScopeMode,
+    ctx: &PickContext,
+    elements: &[Element],
+) -> Option<(i32, i32)> {
     let resolved = match order {
         HintOrder::Reading => return None,
-        HintOrder::Cursor => unsafe {
-            let mut pt = POINT { x: 0, y: 0 };
-            GetCursorPos(&mut pt).ok().map(|_| (pt.x, pt.y))
+        HintOrder::Cursor => match (scope, ctx.active_monitor) {
+            // The pointer may still be on another screen (e.g. after
+            // the window picker moved focus); radiate from the active
+            // monitor's center instead of its nearest edge.
+            (ScopeMode::ActiveMonitor, Some(m)) => Some(
+                ctx.cursor
+                    .map_or_else(|| rect_center(&m), |p| anchor_in_or_center(p, &m)),
+            ),
+            _ => ctx.cursor,
         },
         HintOrder::Center => match scope {
-            ScopeMode::ActiveWindow => unsafe {
-                let hwnd = GetForegroundWindow();
-                if hwnd.0.is_null() {
+            ScopeMode::ActiveWindow => {
+                if ctx.foreground.0.is_null() {
                     None
                 } else {
-                    window_picker::visible_frame(hwnd)
+                    // SAFETY: `visible_frame` tolerates stale / invalid
+                    // HWNDs and reports `None` for them.
+                    unsafe { window_picker::visible_frame(ctx.foreground) }
                         .filter(|b| b.is_visible())
                         .map(|b| b.center())
                 }
-            },
-            ScopeMode::ActiveMonitor => {
-                let r = current_monitor_rect();
-                // `current_monitor_rect` reports a huge sentinel rect on
-                // failure; its center (≈ origin) is meaningless here.
-                if r.left == i32::MIN / 2 {
-                    None
-                } else {
-                    Some(((r.left + r.right) / 2, (r.top + r.bottom) / 2))
-                }
             }
+            ScopeMode::ActiveMonitor => ctx.active_monitor.as_ref().map(rect_center),
             ScopeMode::AllWindows => None,
         },
     };
     resolved.or_else(|| union_center(elements))
-}
-
-/// Monitor rect (in physical pixels) under the current cursor. Falls
-/// back to the entire virtual desktop when the cursor query or
-/// `GetMonitorInfo` fail — better to overshoot the scope than refuse
-/// to enumerate anything.
-fn current_monitor_rect() -> RECT {
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
-
-    unsafe {
-        let mut pt = POINT { x: 0, y: 0 };
-        if GetCursorPos(&mut pt).is_err() {
-            return RECT {
-                left: i32::MIN / 2,
-                top: i32::MIN / 2,
-                right: i32::MAX / 2,
-                bottom: i32::MAX / 2,
-            };
-        }
-        let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO {
-            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        if GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            mi.rcMonitor
-        } else {
-            RECT {
-                left: i32::MIN / 2,
-                top: i32::MIN / 2,
-                right: i32::MAX / 2,
-                bottom: i32::MAX / 2,
-            }
-        }
-    }
 }
 
 /// Fraction of the window's frame area that overlaps `monitor`, in
@@ -1934,6 +2016,85 @@ unsafe fn send_accessibility_probe(hwnd: HWND) {
             SMTO_ABORTIFHUNG,
             ACCESSIBILITY_ACTIVATION_TIMEOUT_MS,
             None,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    const PRIMARY: RECT = RECT {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    const SECONDARY: RECT = RECT {
+        left: 1920,
+        top: 0,
+        right: 4480,
+        bottom: 1440,
+    };
+
+    #[test]
+    fn active_monitor_prefers_foreground_monitor() {
+        assert_eq!(
+            resolve_active_monitor(Some(SECONDARY), false, Some(PRIMARY)),
+            Some(SECONDARY)
+        );
+    }
+
+    #[test]
+    fn active_monitor_uses_cursor_when_shell_focused() {
+        assert_eq!(
+            resolve_active_monitor(Some(PRIMARY), true, Some(SECONDARY)),
+            Some(SECONDARY)
+        );
+        assert_eq!(
+            resolve_active_monitor(None, true, Some(SECONDARY)),
+            Some(SECONDARY)
+        );
+    }
+
+    #[test]
+    fn active_monitor_uses_cursor_without_foreground() {
+        assert_eq!(
+            resolve_active_monitor(None, false, Some(PRIMARY)),
+            Some(PRIMARY)
+        );
+    }
+
+    #[test]
+    fn active_monitor_none_when_nothing_resolves() {
+        assert_eq!(resolve_active_monitor(None, false, None), None);
+        assert_eq!(resolve_active_monitor(Some(PRIMARY), true, None), None);
+    }
+
+    #[test]
+    fn anchor_keeps_point_inside_rect() {
+        assert_eq!(anchor_in_or_center((2000, 100), &SECONDARY), (2000, 100));
+        // Left/top edges are inclusive.
+        assert_eq!(anchor_in_or_center((1920, 0), &SECONDARY), (1920, 0));
+    }
+
+    #[test]
+    fn anchor_falls_back_to_center_outside_rect() {
+        assert_eq!(anchor_in_or_center((500, 500), &SECONDARY), (3200, 720));
+        // Right/bottom edges are exclusive (they belong to the next monitor).
+        assert_eq!(anchor_in_or_center((1920, 500), &PRIMARY), (960, 540));
+        assert_eq!(
+            anchor_in_or_center((-10, -10), &rect(-1920, 0, 0, 1080)),
+            (-960, 540)
         );
     }
 }
