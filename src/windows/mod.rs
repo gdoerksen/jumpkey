@@ -1,4 +1,4 @@
-//! Windows backend for keyhop.
+//! Windows backend for jumpkey.
 //!
 //! Implements [`crate::Backend`] against the Windows UI Automation API via
 //! the `uiautomation` crate, plus the global hotkey ([`hotkey`]) and
@@ -152,7 +152,7 @@ const MSAA_ROLE_BUTTON_MENU: i32 = 0x39;
 /// the debug log at the end of `enumerate_foreground` so we can tell —
 /// after the fact — whether the picker stopped because it ran out of
 /// elements, hit the depth cap, or simply found everything the tree
-/// exposes. Crucial when triaging "keyhop didn't see X" reports on a
+/// exposes. Crucial when triaging "jumpkey didn't see X" reports on a
 /// specific page or app.
 #[derive(Debug, Default)]
 struct WalkStats {
@@ -1013,7 +1013,7 @@ impl Backend for WindowsBackend {
         let shared: Arc<[Element]> = Arc::from(out.clone().into_boxed_slice());
         self.cache.lock().insert(key, shared);
 
-        // Per-role breakdown helps when a user reports "keyhop didn't see
+        // Per-role breakdown helps when a user reports "jumpkey didn't see
         // button X in app Y" — the log shows whether the element was
         // dropped by the role filter or never made it through the bounds
         // / pattern checks at all.

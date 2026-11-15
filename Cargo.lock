@@ -863,19 +863,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyboard-types"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
-dependencies = [
- "bitflags 2.11.1",
- "serde",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "keyhop"
-version = "0.5.0"
+name = "jumpkey"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -893,6 +882,17 @@ dependencies = [
  "tray-icon",
  "uiautomation",
  "windows 0.58.0",
+]
+
+[[package]]
+name = "keyboard-types"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
+dependencies = [
+ "bitflags 2.11.1",
+ "serde",
+ "unicode-segmentation",
 ]
 
 [[package]]

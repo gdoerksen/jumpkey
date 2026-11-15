@@ -24,8 +24,8 @@ Use the GitHub MCP `issue_read` tool to retrieve issue details:
 server: user-github
 toolName: issue_read
 arguments:
-  owner: rsaz
-  repo: keyhop
+  owner: gdoerksen
+  repo: jumpkey
   issue_number: <N>
   method: get
 ```
@@ -98,8 +98,8 @@ Use the GitHub MCP tools to:
    server: user-github
    toolName: add_issue_comment
    arguments:
-     owner: rsaz
-     repo: keyhop
+     owner: gdoerksen
+     repo: jumpkey
      issue_number: <N>
      body: <requirements-doc>
    ```
@@ -109,8 +109,8 @@ Use the GitHub MCP tools to:
    server: user-github
    toolName: issue_write
    arguments:
-     owner: rsaz
-     repo: keyhop
+     owner: gdoerksen
+     repo: jumpkey
      issue_number: <N>
      method: update
      labels: ["verified", "ready"]
@@ -121,11 +121,11 @@ Use the GitHub MCP tools to:
    server: user-github
    toolName: issue_write
    arguments:
-     owner: rsaz
-     repo: keyhop
+     owner: gdoerksen
+     repo: jumpkey
      issue_number: <N>
      method: update
-     assignees: ["rsaz"]
+     assignees: ["gdoerksen"]
    ```
 
 ### 5. Confirm Completion
@@ -136,7 +136,7 @@ After successfully updating the issue, provide a summary:
 ✅ Issue #<N> updated:
    - Requirements documented: <comment-url>
    - Labels: verified, ready
-   - Assigned to: rsaz
+   - Assigned to: gdoerksen
    
 Ready for implementation. Use `gitdev <N>` to generate a development plan.
 ```

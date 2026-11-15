@@ -1,12 +1,17 @@
 # Code signing the MSI and EXE
 
+> **Fork notice.** This document was inherited from the upstream `keyhop` project. The Cloudflare R2 bucket,
+> the `dl.expresso-ts.com` host, the Microsoft Store listing and the Trusted Signing account named here
+> belong to the original author. Jumpkey does not have them yet; treat these values as placeholders and
+> replace them with your own before following the steps.
+
 Microsoft Store Policy 10.2.9 has a code-sign **recommendation** (not a hard
 fail today, but expected to become one): every executable and installer
 shipped through the Store must be signed with a SHA-256 or higher
 certificate. Unsigned installers also trigger Windows SmartScreen's "unknown
 publisher" warning, which scares away most users on first install.
 
-This document is the reference for adding signing to the keyhop release
+This document is the reference for adding signing to the jumpkey release
 pipeline once we have a certificate. **No signing happens today** — the v0.3.0
 release is unsigned. This is fine for the GitHub Releases distribution
 channel; it is the blocker for the Store submission.
@@ -30,15 +35,15 @@ For an individual maintainer (you, today), **[Microsoft Trusted Signing](https:/
 4. Add to `.github/workflows/release.yml` between the `Build MSI installer` step and the `Attach binaries to GitHub Release` step:
 
 ```yaml
-- name: Sign keyhop.exe and MSI with Trusted Signing
+- name: Sign jumpkey.exe and MSI with Trusted Signing
   uses: azure/trusted-signing-action@v0
   with:
     azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
     azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
     azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}    # or federated
     endpoint: https://eus.codesigning.azure.net/
-    trusted-signing-account-name: keyhop-signing
-    certificate-profile-name: keyhop-public
+    trusted-signing-account-name: jumpkey-signing
+    certificate-profile-name: jumpkey-public
     files-folder: target
     files-folder-filter: exe,msi
     files-folder-recurse: true
@@ -47,11 +52,11 @@ For an individual maintainer (you, today), **[Microsoft Trusted Signing](https:/
     timestamp-digest: SHA256
 ```
 
-That single step signs **both** `target\release\keyhop.exe` and `target\wix\Keyhop-*.msi`.
+That single step signs **both** `target\release\jumpkey.exe` and `target\wix\Jumpkey-*.msi`.
 
 5. Validate locally with:
    ```powershell
-   signtool.exe verify /pa /v Keyhop-0.3.0-x86_64.msi
+   signtool.exe verify /pa /v Jumpkey-0.3.0-x86_64.msi
    ```
 
 ## Until the cert is in place

@@ -28,7 +28,7 @@
 //! │ Keyboard                         │   [x] Cache enumeration          │
 //! │   Layout ▼                       │   Cache TTL ms   [▲ 500 ▼]       │
 //! │   Keyboard type ▼                │                                  │
-//! │                                  │ [x] Launch keyhop at startup     │
+//! │                                  │ [x] Launch jumpkey at startup     │
 //! ├──────────────────────────────────┴──────────────────────────────────┤
 //! │              [Save]   [Cancel]   [Reset to Defaults]                │
 //! └─────────────────────────────────────────────────────────────────────┘
@@ -360,7 +360,7 @@ pub fn show(initial: &Config) -> Result<Option<Config>> {
         let _ = InitCommonControlsEx(&icc);
 
         let hinstance = HINSTANCE(GetModuleHandleW(None)?.0);
-        let class_name = w!("KeyhopSettingsWindow");
+        let class_name = w!("JumpkeySettingsWindow");
 
         let wc = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -397,7 +397,7 @@ pub fn show(initial: &Config) -> Result<Option<Config>> {
         let hwnd = CreateWindowExW(
             ex_style,
             class_name,
-            w!("keyhop Settings"),
+            w!("jumpkey Settings"),
             style,
             x,
             y,
@@ -458,7 +458,7 @@ mod tips {
         "Append 0-9 to the alphabet. Increases capacity from 9 keys to 19 on the home-row preset.";
     pub const INCLUDE_EXTENDED: &str = "Append ; and ' (right-hand pinky stretch) to the alphabet. Two extra single-key hints with no extra hand travel.";
     pub const EXCLUDE_AMBIGUOUS: &str = "Strip O and 0 from the final alphabet so they can't be misread on a busy overlay. The Consolas overlay font already differentiates I, l, 1.";
-    pub const MIN_SINGLES: &str = "Guarantees at least this many one-keystroke hints, even on busy scenes where math-optimal allocation would skip them.\n\nDefault 7: on the 9-key home row, up to two keys (d, then k on QWERTY) can lead two-key hints; keyhop uses one or two, whichever needs fewer keystrokes. Capped at (alphabet length − 1) at runtime so multi-char hints still have a prefix slot.";
+    pub const MIN_SINGLES: &str = "Guarantees at least this many one-keystroke hints, even on busy scenes where math-optimal allocation would skip them.\n\nDefault 7: on the 9-key home row, up to two keys (d, then k on QWERTY) can lead two-key hints; jumpkey uses one or two, whichever needs fewer keystrokes. Capped at (alphabet length − 1) at runtime so multi-char hints still have a prefix slot.";
     pub const ELEMENT_BG: &str = "Background color of element badges. Format: #RRGGBB.\n\nClick the swatch to pick visually.";
     pub const WINDOW_BG: &str = "Background color of window-picker badges. Format: #RRGGBB.\n\nClick the swatch to pick visually.";
     pub const ELEMENT_OPACITY: &str =
@@ -479,7 +479,7 @@ The window picker's setting lives in config.toml ([colors.window] show_leader)."
     pub const ELEMENT_FONT_SIZE: &str = "Badge label height in pixels for element hints.\n\nThe suggested default is calculated from your monitor's DPI scaling. Increase for better readability on high-DPI screens; decrease for a more compact overlay.";
     pub const FONT_SIZE_AUTO: &str = "Scale the badge size automatically with the monitor's DPI (saved as font_size = 0). The number shows the size used on your primary monitor.\n\nUntick to pick a fixed size.";
     pub const WINDOW_FONT_SIZE: &str = "Badge label height in pixels for window-picker hints.\n\nThe suggested default is calculated from your monitor's DPI scaling.";
-    pub const LAUNCH_STARTUP: &str = "Run keyhop automatically when you sign in to Windows. Implemented by writing to HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run.";
+    pub const LAUNCH_STARTUP: &str = "Run jumpkey automatically when you sign in to Windows. Implemented by writing to HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run.";
     pub const SAVE: &str = "Apply changes immediately and close. Hotkeys, alphabet, scope, colors, and cache are all hot-reloaded — no restart needed.";
     pub const CANCEL: &str = "Close without saving. Any pending changes are discarded.";
     pub const RESET: &str = "Restore factory defaults and apply immediately. Closes the dialog and overwrites your config.toml with the built-in defaults.";
@@ -1061,7 +1061,7 @@ unsafe fn build_controls(hwnd: HWND, hinstance: HINSTANCE, initial: &Config) {
     let launch_startup = create_checkbox(
         hwnd,
         hinstance,
-        "Launch keyhop at Windows startup",
+        "Launch jumpkey at Windows startup",
         startup_now,
         ID_LAUNCH_STARTUP,
         RIGHT_LABEL_X,

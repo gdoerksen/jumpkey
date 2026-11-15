@@ -1,13 +1,13 @@
-//! Tiny inter-process channel between the running `keyhop` instance and
-//! a freshly-launched `keyhop --close` invocation.
+//! Tiny inter-process channel between the running `jumpkey` instance and
+//! a freshly-launched `jumpkey --close` invocation.
 //!
 //! Why bother:
 //!
 //! - The single-instance mutex (see [`crate::windows::single_instance`])
-//!   stops a *second* keyhop from booting, but gives the user no way to
+//!   stops a *second* jumpkey from booting, but gives the user no way to
 //!   tell the *first* one to stop. Without this module the only options
 //!   are the tray menu or Task Manager, both of which break the
-//!   "everything from a terminal" workflow keyhop is built around.
+//!   "everything from a terminal" workflow jumpkey is built around.
 //!
 //! - We can't just `taskkill /F` from the closer process: that skips
 //!   `Drop` on the instance guard and on the global hotkeys, leaving
@@ -39,11 +39,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// instance (which registers it) and the closer process (which queries
 /// it via [`FindWindowW`]). Keep it specific enough that no other app
 /// could plausibly pick the same string.
-pub const IPC_CLASS: PCWSTR = w!("KeyhopIpcWindowClass_v1");
+pub const IPC_CLASS: PCWSTR = w!("JumpkeyIpcWindowClass_v1");
 /// Window title for the hidden IPC window. Doesn't have to match across
 /// processes (we look up by class), but a recognisable name helps when
 /// inspecting the process tree with Spy++ or similar.
-pub const IPC_TITLE: PCWSTR = w!("Keyhop IPC");
+pub const IPC_TITLE: PCWSTR = w!("Jumpkey IPC");
 
 /// Create the hidden IPC window in the *running* instance. Call this
 /// once during startup, after the message loop's owning thread has been
@@ -54,7 +54,7 @@ pub const IPC_TITLE: PCWSTR = w!("Keyhop IPC");
 /// Returns the `HWND` so the caller can keep it alive for the lifetime
 /// of the message loop. Dropping the returned [`IpcWindow`] destroys
 /// the window and unregisters the class, freeing the slot for the next
-/// keyhop launch.
+/// jumpkey launch.
 pub fn create() -> Result<IpcWindow> {
     unsafe {
         let h_instance = GetModuleHandleW(None).context("GetModuleHandleW for IPC window")?;
@@ -96,7 +96,7 @@ pub fn create() -> Result<IpcWindow> {
 }
 
 /// RAII handle to the hidden IPC window. Drop destroys the window so a
-/// freshly-relaunched keyhop can re-create it without colliding.
+/// freshly-relaunched jumpkey can re-create it without colliding.
 pub struct IpcWindow {
     hwnd: HWND,
 }
@@ -133,13 +133,13 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// Look up a running keyhop instance and ask it to shut down.
+/// Look up a running jumpkey instance and ask it to shut down.
 ///
 /// Returns `true` if a running instance was found and signalled,
 /// `false` if no instance window exists. Errors propagate from the
 /// underlying Win32 calls.
 ///
-/// Used by the `--close` CLI flag: a freshly-launched keyhop calls
+/// Used by the `--close` CLI flag: a freshly-launched jumpkey calls
 /// this and exits before initialising any of the heavier subsystems
 /// (tray, hotkeys, UI Automation).
 pub fn send_close_signal() -> Result<bool> {
@@ -154,7 +154,7 @@ pub fn send_close_signal() -> Result<bool> {
         // PostMessage (not SendMessage) so we don't block on the running
         // instance's UI thread — particularly useful if it's mid-overlay.
         PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0))
-            .context("PostMessageW(WM_CLOSE) to running keyhop instance")?;
+            .context("PostMessageW(WM_CLOSE) to running jumpkey instance")?;
         Ok(true)
     }
 }

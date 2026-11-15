@@ -67,8 +67,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::Bounds;
 
-const CLASS_NAME: PCWSTR = w!("KeyhopOverlayClass");
-const WINDOW_TITLE: PCWSTR = w!("Keyhop Overlay");
+const CLASS_NAME: PCWSTR = w!("JumpkeyOverlayClass");
+const WINDOW_TITLE: PCWSTR = w!("Jumpkey Overlay");
 
 /// Pixel gap between the matchable badge and the optional "extra" pill,
 /// and the vertical gap between stacked badges after collision resolution.
@@ -1101,7 +1101,7 @@ unsafe fn create_font(height: i32, weight: i32) -> HFONT {
 /// to fit.
 #[derive(Debug, Clone, Copy)]
 enum BadgePosition {
-    /// Top-left of the element. The classic vimium/keyhop look — keeps
+    /// Top-left of the element. The classic vimium/jumpkey look — keeps
     /// labels visually associated with the *start* of the control.
     TopLeft,
     /// Top-right of the element. Useful when the top-left of two adjacent

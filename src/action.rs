@@ -1,6 +1,6 @@
 //! Actions that can be performed against an [`crate::Element`].
 
-/// Things keyhop can do to a target element. Backends choose the best native
+/// Things jumpkey can do to a target element. Backends choose the best native
 /// mechanism (UI Automation invoke pattern, synthesized input, etc.) and may
 /// return an error for actions a given element does not support.
 #[derive(Debug, Clone, PartialEq, Eq)]

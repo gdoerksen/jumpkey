@@ -121,7 +121,7 @@ impl Prewarmer {
         // loop continues — one flaky window must not kill pre-warming
         // for everyone else.
         thread::Builder::new()
-            .name("keyhop-prewarm".into())
+            .name("jumpkey-prewarm".into())
             .spawn(move || worker_loop(cache, max_elements_global, rx))
             .context("spawning prewarm worker thread")?;
 

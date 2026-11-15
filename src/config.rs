@@ -1,4 +1,4 @@
-//! User configuration loaded from `%APPDATA%\keyhop\config.toml`.
+//! User configuration loaded from `%APPDATA%\jumpkey\config.toml`.
 //!
 //! The config is intentionally optional: if the file is missing or malformed,
 //! [`Config::load_or_default`] logs a warning and returns sensible defaults
@@ -312,13 +312,13 @@ impl Default for PerformanceConfig {
 }
 
 impl Config {
-    /// Path to the config file under `%APPDATA%\keyhop\config.toml`.
+    /// Path to the config file under `%APPDATA%\jumpkey\config.toml`.
     /// Returns `None` if `APPDATA` isn't set (very unusual on Windows; we
     /// just fall back to defaults in that case).
     pub fn file_path() -> Option<PathBuf> {
         let appdata = std::env::var_os("APPDATA")?;
         let mut path = PathBuf::from(appdata);
-        path.push("keyhop");
+        path.push("jumpkey");
         path.push("config.toml");
         Some(path)
     }
@@ -358,7 +358,7 @@ impl Config {
         Ok(Some(cfg))
     }
 
-    /// Serialize and write the config to `%APPDATA%\keyhop\config.toml`,
+    /// Serialize and write the config to `%APPDATA%\jumpkey\config.toml`,
     /// creating the directory if needed.
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::file_path()
