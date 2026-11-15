@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     use uiautomation::{types::Handle, UIAutomation};
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW};
 
-    println!("keyhop · foreground UI Automation walker");
+    println!("jumpkey · foreground UI Automation walker");
     for s in (1..=3).rev() {
         println!("  switch to your target window... {s}");
         thread::sleep(Duration::from_secs(1));

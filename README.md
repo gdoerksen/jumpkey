@@ -1,15 +1,17 @@
-# keyhop
+# jumpkey
 
 > Drive your entire desktop from the keyboard. Press a leader chord, see hint labels on every clickable thing on screen, type the hint, done.
 
-`keyhop` is a system-wide keyboard navigation layer that lets you control your whole computer without ever touching the mouse. Reaching for the mouse forces a constant context switch between thinking and pointing — your hands leave the home row, your eyes hunt for a cursor, and your flow breaks. `keyhop` keeps you on the keyboard so you stay fast, focused, and productive, using OS accessibility APIs (UI Automation on Windows) to target native UI elements semantically.
+> **Origin.** Jumpkey is a fork of [keyhop](https://github.com/rsaz/keyhop) by Richard Zampieri, used under the MIT OR Apache-2.0 license. Config, logs and the installer use new `jumpkey` names; see the [changelog](CHANGELOG.md) for what changed.
 
-**Status:** v0.4.0 — UX & performance release on top of the v0.3.0 Windows backend. Adds variable-length hint labels (one keystroke for ≤9 targets), a Consolas overlay font, alphabet presets with ambiguous-character exclusion, multi-screen targeting modes (`active_window` / `active_monitor` / `all_windows`), monitor-aware badge positioning, and an in-process element-tree cache. Browser content detection (Chromium), multi-monitor window picker, lifecycle controls (`keyhop --close`, `--clear-logs`, daily log rotation), visual Settings dialog, and the MSI installer (no MSVC toolchain required to install) all carry over from v0.3.0. Linux backend planned.
+`jumpkey` is a system-wide keyboard navigation layer that lets you control your whole computer without ever touching the mouse. Reaching for the mouse forces a constant context switch between thinking and pointing — your hands leave the home row, your eyes hunt for a cursor, and your flow breaks. `jumpkey` keeps you on the keyboard so you stay fast, focused, and productive, using OS accessibility APIs (UI Automation on Windows) to target native UI elements semantically.
 
-[![ci](https://github.com/rsaz/keyhop/actions/workflows/ci.yml/badge.svg)](https://github.com/rsaz/keyhop/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/keyhop.svg)](https://crates.io/crates/keyhop)
-[![docs.rs](https://docs.rs/keyhop/badge.svg)](https://docs.rs/keyhop)
-[![license](https://img.shields.io/crates/l/keyhop.svg)](#license)
+**Status:** v0.6.0 (unreleased): the first Jumpkey release, forked from keyhop v0.5.0. Hint labels now follow your keyboard layout (Dvorak, Colemak, Workman, non-Latin layouts) and your finger geometry, so labels never repeat a key or use two keys typed by the same finger, and the strongest fingers get the shortest labels. Labels are handed out center-out from the window, and hints are drawn as callout badges with a tail pointing at the target. Windows only for now; a Linux backend is under consideration. **Renamed from keyhop:** config, logs, the startup entry and the installer now use `jumpkey` names, so nothing is migrated automatically. See the [changelog](CHANGELOG.md).
+
+[![ci](https://github.com/gdoerksen/jumpkey/actions/workflows/ci.yml/badge.svg)](https://github.com/gdoerksen/jumpkey/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/jumpkey.svg)](https://crates.io/crates/jumpkey)
+[![docs.rs](https://docs.rs/jumpkey/badge.svg)](https://docs.rs/jumpkey)
+[![license](https://img.shields.io/crates/l/jumpkey.svg)](#license)
 
 ## Goals
 
@@ -20,15 +22,15 @@
 ## Crate layout
 
 ```
-keyhop/
+jumpkey/
 ├─ src/
 │  ├─ lib.rs               # public API: Action, Backend, Element, HintEngine
-│  ├─ main.rs              # the `keyhop` binary (CLI flags, IPC, message loop)
+│  ├─ main.rs              # the `jumpkey` binary (CLI flags, IPC, message loop)
 │  ├─ model.rs
 │  ├─ action.rs
 │  ├─ backend.rs
 │  ├─ hint.rs
-│  ├─ config.rs            # TOML config (%APPDATA%/keyhop/config.toml)
+│  ├─ config.rs            # TOML config (%APPDATA%/jumpkey/config.toml)
 │  └─ windows/             # Windows backend (cfg(windows) only)
 │     ├─ mod.rs            # WindowsBackend (UI Automation tree walk + browser activation)
 │     ├─ hotkey.rs         # global leader hotkeys + chord parser
@@ -38,8 +40,8 @@ keyhop/
 │     ├─ startup.rs        # "launch at login" via HKCU Run key
 │     ├─ notification.rs   # MessageBox-backed user notifications
 │     ├─ window_picker.rs  # Alt-Tab-style window picker (multi-monitor, restores minimized)
-│     ├─ single_instance.rs # named-mutex guard so only one keyhop runs
-│     └─ ipc.rs            # hidden message-only window for `keyhop --close`
+│     ├─ single_instance.rs # named-mutex guard so only one jumpkey runs
+│     └─ ipc.rs            # hidden message-only window for `jumpkey --close`
 ├─ wix/
 │  └─ main.wxs             # WiX 3 source for the MSI installer
 ├─ docs/
@@ -49,16 +51,16 @@ keyhop/
    └─ enumerate_foreground.rs
 ```
 
-One package, one publish: `keyhop` ships both the binary and a reusable library API. Linux / Wayland / macOS backends will land as additional `cfg`-gated modules under `src/`.
+One package, one publish: `jumpkey` ships both the binary and a reusable library API. A Linux backend (X11/Wayland), if added, would land as an additional `cfg`-gated modules under `src/`.
 
 ## Install
 
 ### Windows (recommended) — MSI installer
 
-Grab `Keyhop-<version>-x86_64.msi` from the [latest GitHub Release](https://github.com/rsaz/keyhop/releases/latest) and double-click it. The installer:
+Grab `Jumpkey-<version>-x86_64.msi` from the [latest GitHub Release](https://github.com/gdoerksen/jumpkey/releases/latest) and double-click it. The installer:
 
-- Installs to `%ProgramFiles%\Keyhop\bin\keyhop.exe`
-- Adds Keyhop to the **system PATH** so `keyhop --close`, `keyhop --clear-logs`, etc. work from any terminal
+- Installs to `%ProgramFiles%\Jumpkey\bin\jumpkey.exe`
+- Adds Jumpkey to the **system PATH** so `jumpkey --close`, `jumpkey --clear-logs`, etc. work from any terminal
 - Creates a **Start Menu** shortcut
 - Registers a single **Add/Remove Programs** entry (uninstall via `appwiz.cpl` or `Settings → Apps`)
 - Cleanly closes a running instance during upgrades (Windows Installer's RestartManager)
@@ -66,24 +68,24 @@ Grab `Keyhop-<version>-x86_64.msi` from the [latest GitHub Release](https://gith
 For unattended installs (CI, fleet rollout, MDM, Microsoft Store automated validation):
 
 ```powershell
-msiexec /i Keyhop-0.4.0-x86_64.msi /qn
+msiexec /i Jumpkey-0.6.0-x86_64.msi /qn
 ```
 
 UAC will prompt once for admin rights (per-machine install).
 
 ### Windows — portable EXE
 
-If you don't want an installer, download `keyhop.exe` from the same [release page](https://github.com/rsaz/keyhop/releases/latest), drop it anywhere, and run it. No registry footprint, no Start Menu entry — you're on your own for placing it on PATH and for upgrades.
+If you don't want an installer, download `jumpkey.exe` from the same [release page](https://github.com/gdoerksen/jumpkey/releases/latest), drop it anywhere, and run it. No registry footprint, no Start Menu entry — you're on your own for placing it on PATH and for upgrades.
 
 ### Build from source (developers)
 
 You'll need the MSVC toolchain (the regular Rust install on Windows pulls this in for you):
 
 ```powershell
-cargo install keyhop                    # from crates.io
+cargo install jumpkey                    # from crates.io
 # — or —
-git clone https://github.com/rsaz/keyhop
-cd keyhop
+git clone https://github.com/gdoerksen/jumpkey
+cd jumpkey
 cargo install --path .
 ```
 
@@ -96,13 +98,13 @@ If you see `error: linker 'link.exe' not found`, install the Build Tools — or 
 ## Run
 
 ```powershell
-keyhop                         # release install (no console, logs to file)
+jumpkey                         # release install (no console, logs to file)
 cargo run --release            # from source (no console, logs to file)
 cargo run                      # debug build (shows console with live logs)
 cargo run --example enumerate_foreground
 ```
 
-The binary uses the Windows GUI subsystem in release builds, running silently in the background with no console window. Logs are written to `%LOCALAPPDATA%\keyhop\keyhop.log` and can be viewed via the tray menu's "View Log" option. Debug builds (`cargo run` without `--release`) still show a console window for development convenience.
+The binary uses the Windows GUI subsystem in release builds, running silently in the background with no console window. Logs are written to `%LOCALAPPDATA%\jumpkey\jumpkey.log` and can be viewed via the tray menu's "View Log" option. Debug builds (`cargo run` without `--release`) still show a console window for development convenience.
 
 ### Flags
 
@@ -111,12 +113,12 @@ The binary uses the Windows GUI subsystem in release builds, running silently in
 | `-h`, `--help`        | Print usage and exit.                                                                 |
 | `-V`, `--version`     | Print version and exit.                                                               |
 | `--no-tray`           | Run without the system tray icon (hotkeys-only mode).                                 |
-| `--close`, `--quit`   | Cleanly shut down the running keyhop instance (uses a hidden IPC window). Exits 0.    |
-| `--clear-logs`        | Delete every `keyhop*.log` under `%LOCALAPPDATA%\keyhop\`. Run `--close` first if the live instance has the file open. |
+| `--close`, `--quit`   | Cleanly shut down the running jumpkey instance (uses a hidden IPC window). Exits 0.    |
+| `--clear-logs`        | Delete every `jumpkey*.log` under `%LOCALAPPDATA%\jumpkey\`. Run `--close` first if the live instance has the file open. |
 
 ## Using it
 
-After launching, `keyhop` registers two global hotkeys and a tray icon. The default chords below can be changed from `Settings...` in the tray menu — see [Configuration](#configuration).
+After launching, `jumpkey` registers two global hotkeys and a tray icon. The default chords below can be changed from `Settings...` in the tray menu — see [Configuration](#configuration).
 
 | Action          | Default keys            | What it does                                                                       |
 | --------------- | ----------------------- | ---------------------------------------------------------------------------------- |
@@ -128,21 +130,21 @@ After launching, `keyhop` registers two global hotkeys and a tray icon. The defa
 | Backspace       | `Backspace`             | Drops the last typed character (inside an overlay).                                |
 | Cancel          | `Esc`                   | Dismisses the current overlay without doing anything.                              |
 | Settings        | Tray menu → Settings... | Open the visual configuration dialog.                                              |
-| Quit            | Tray menu → Quit        | Cleanly exits `keyhop`.                                                            |
+| Quit            | Tray menu → Quit        | Cleanly exits `jumpkey`.                                                            |
 
 The modifier only needs to be held on the **last** (completing) keystroke — you don't have to hold it while typing a multi-letter label. For example, to double-click an element with the label `df`, type `d` normally, then hold `Ctrl` and press `f`. If both `Ctrl` and `Shift` are held, `Ctrl` (double-click) takes precedence.
 
-The tray icon's right-click menu mirrors the two leader chords, gives you a `Settings...` entry to customize keyhop visually, and (in release builds) a `View Log` shortcut so you can debug without leaving the keyboard.
+The tray icon's right-click menu mirrors the two leader chords, gives you a `Settings...` entry to customize jumpkey visually, and (in release builds) a `View Log` shortcut so you can debug without leaving the keyboard.
 
 Yellow badges = element picker (will *invoke* the control). Orange badges = window picker (will *focus* the window). Both show the hint letters on the home row by default — colors and the alphabet are editable from `Settings...`.
 
 ### Web browsers
 
-`Ctrl+Shift+Space` works inside Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi, Arc) and finds the actual links, buttons, file rows, nav tabs, and form inputs *inside* the rendered page — not just the browser chrome. keyhop wakes up Chromium's accessibility tree on demand by sending `WM_GETOBJECT` to every renderer HWND before walking, and descends 32 levels deep on browser foregrounds (vs 12 for desktop apps) since DOM trees routinely nest 15–25 deep. Firefox is on the roadmap for v0.4.x; today it surfaces only chrome elements.
+`Ctrl+Shift+Space` works inside Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi, Arc) and finds the actual links, buttons, file rows, nav tabs, and form inputs *inside* the rendered page — not just the browser chrome. jumpkey wakes up Chromium's accessibility tree on demand by sending `WM_GETOBJECT` to every renderer HWND before walking, and descends 32 levels deep on browser foregrounds (vs 12 for desktop apps) since DOM trees routinely nest 15–25 deep. Firefox is on the roadmap for v0.4.x; today it surfaces only chrome elements.
 
 ## Configuration
 
-`keyhop` is configured through a small visual dialog reachable from the tray icon (`Settings...`), so you never have to touch a config file unless you want to. The dialog lets you change:
+`jumpkey` is configured through a small visual dialog reachable from the tray icon (`Settings...`), so you never have to touch a config file unless you want to. The dialog lets you change:
 
 - **Hotkeys** — both leader chords. Type any combination of `Ctrl`, `Shift`, `Alt`, `Win`/`Super` modifiers plus a key (`A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, arrow keys, punctuation, etc.). Example: `Ctrl+Alt+K`.
 - **Hint alphabet** — the characters used to build hint labels. Default: the home row, `fjdkslagh` on QWERTY. Built-in presets are ordered strongest finger first — index, middle, ring, pinky, then sideways stretches; home row before the top, bottom and number rows — so the closest targets get the easiest keys. The order follows your keyboard layout and geometry (on an angle-mod board `c` counts as an index key). Two-key hints start with the strongest-finger keys that can still be followed by nearly every other key — the middle fingers, `d` then `k`, on the home row — since `f` / `j` can't be followed by `g` / `h` under the same-finger rule. The Settings dialog now also exposes:
@@ -160,13 +162,13 @@ Yellow badges = element picker (will *invoke* the control). Orange badges = wind
 - **Target indicator** — when enabled, every element badge paints a thin outline (in the badge's background color) around the actual click target so it's instantly clear which underlying control each card represents — yellow badge, yellow rectangle around the matching element. When smart positioning had to push the badge off the element to dodge a collision, a connector line ending in a small filled triangle is also drawn from the badge to the element. Callouts never draw the outline, since their tail already points at the element; the rare callout with no room for a tail gets just the connector arrow. On by default for the element picker; off for the window picker (which already shows a title pill). Toggle per picker via `colors.element.show_leader` / `colors.window.show_leader` in `config.toml`. The "Draw arrow from badge to target" checkbox in the Settings dialog controls the element picker only.
 - **Launch at Windows startup** — toggles a per-user entry in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (no admin rights required).
 
-`Save` validates everything (invalid hotkey strings or hex colors are rejected up-front), writes `%APPDATA%\keyhop\config.toml`, and shows a confirmation. `Reset to Defaults` deletes the config file. Hotkey, alphabet, and color changes apply on the next launch; the startup toggle takes effect immediately.
+`Save` validates everything (invalid hotkey strings or hex colors are rejected up-front), writes `%APPDATA%\jumpkey\config.toml`, and shows a confirmation. `Reset to Defaults` deletes the config file. Hotkey, alphabet, and color changes apply on the next launch; the startup toggle takes effect immediately.
 
-If a configured hotkey is already in use by another app at startup, keyhop reports the conflict via a notification dialog and continues running with the surviving chord (e.g. if pick-window conflicts but pick-element doesn't, the latter still works). Open `Settings...` to choose a different combination.
+If a configured hotkey is already in use by another app at startup, jumpkey reports the conflict via a notification dialog and continues running with the surviving chord (e.g. if pick-window conflicts but pick-element doesn't, the latter still works). Open `Settings...` to choose a different combination.
 
 ### config.toml format (for power users)
 
-The Settings dialog is the recommended path, but `%APPDATA%\keyhop\config.toml` is plain TOML if you prefer to script it:
+The Settings dialog is the recommended path, but `%APPDATA%\jumpkey\config.toml` is plain TOML if you prefer to script it:
 
 ```toml
 [hotkeys]
@@ -219,18 +221,18 @@ shape        = ""         # empty = preset default (rect)
 launch_at_startup = false
 ```
 
-Missing keys, missing sections, and an entirely missing file all fall back to the v0.1.0 defaults. Malformed TOML is logged and ignored — keyhop will start with defaults rather than refuse to run.
+Missing keys, missing sections, and an entirely missing file all fall back to the v0.1.0 defaults. Malformed TOML is logged and ignored — jumpkey will start with defaults rather than refuse to run.
 
 ## Library use
 
-Beyond the binary, `keyhop` exposes a small library API. The Windows backend implements [`Backend`](https://docs.rs/keyhop/latest/keyhop/trait.Backend.html), and the [`HintEngine`](https://docs.rs/keyhop/latest/keyhop/struct.HintEngine.html) is platform-agnostic.
+Beyond the binary, `jumpkey` exposes a small library API. The Windows backend implements [`Backend`](https://docs.rs/jumpkey/latest/jumpkey/trait.Backend.html), and the [`HintEngine`](https://docs.rs/jumpkey/latest/jumpkey/struct.HintEngine.html) is platform-agnostic.
 
 ```rust
-use keyhop::{Backend, HintEngine};
+use jumpkey::{Backend, HintEngine};
 
 #[cfg(windows)]
 fn enumerate() -> anyhow::Result<()> {
-    let mut backend = keyhop::windows::WindowsBackend::new()?;
+    let mut backend = jumpkey::windows::WindowsBackend::new()?;
     let elements = backend.enumerate_foreground()?;
     let hints = HintEngine::default().generate(elements.len());
     for (el, hint) in elements.iter().zip(hints.iter()) {
@@ -261,7 +263,7 @@ fn enumerate() -> anyhow::Result<()> {
 ### Shipped (v0.2.0)
 
 - [x] Visual Settings dialog (no `.toml` editing required)
-- [x] Configurable hotkeys via `%APPDATA%\keyhop\config.toml` with chord parser
+- [x] Configurable hotkeys via `%APPDATA%\jumpkey\config.toml` with chord parser
 - [x] Configurable hint alphabet
 - [x] Configurable overlay colors (`#RRGGBB`)
 - [x] Hotkey conflict detection with user notification
@@ -274,12 +276,12 @@ fn enumerate() -> anyhow::Result<()> {
 - [x] Browser webpage content detection (Chrome / Edge / Brave / Opera / Vivaldi / Arc) via on-demand Chromium accessibility-tree activation (`WM_GETOBJECT` to every renderer HWND) plus a 32-level UIA walk on browser foregrounds
 - [x] Multi-monitor window picker fixes: badges anchor inside the title bar (visible on maximized windows), DWM-cloaked background UWP apps are filtered out, and selecting a minimized window restores it before focusing
 - [x] Element-picker badge UX: smaller font, layout pass tries `OutsideTop` first so the underlying control stays visible
-- [x] `keyhop --close` / `--quit` — cleanly shut down a running instance from any terminal (hidden message-only IPC window translates `WM_CLOSE` into the same path the tray's "Quit" entry uses)
-- [x] `keyhop --clear-logs` — wipes log files under `%LOCALAPPDATA%\keyhop\`
-- [x] Daily log rotation with 7-file retention (replaces the unbounded single `keyhop.log`)
+- [x] `jumpkey --close` / `--quit` — cleanly shut down a running instance from any terminal (hidden message-only IPC window translates `WM_CLOSE` into the same path the tray's "Quit" entry uses)
+- [x] `jumpkey --clear-logs` — wipes log files under `%LOCALAPPDATA%\jumpkey\`
+- [x] Daily log rotation with 7-file retention (replaces the unbounded single `jumpkey.log`)
 - [x] Walk diagnostics — every `enumerate_foreground` logs nodes visited, deepest depth, and whether the depth/element cap was hit
-- [x] **MSI installer** (`Keyhop-<version>-x86_64.msi`) — silent-install, single ARP entry, Start Menu shortcut, PATH integration; built by `cargo wix` and attached to every GitHub Release
-- [x] CI: `release.yml` builds and attaches both `keyhop.exe` and the MSI; `actions/checkout` and `softprops/action-gh-release` bumped to Node.js 24 versions
+- [x] **MSI installer** (`Jumpkey-<version>-x86_64.msi`) — silent-install, single ARP entry, Start Menu shortcut, PATH integration; built by `cargo wix` and attached to every GitHub Release
+- [x] CI: `release.yml` builds and attaches both `jumpkey.exe` and the MSI; `actions/checkout` and `softprops/action-gh-release` bumped to Node.js 24 versions
 - [x] Dependabot configured (`cargo` + `github-actions`, weekly)
 
 ### Shipped (v0.4.0)
@@ -292,35 +294,40 @@ fn enumerate() -> anyhow::Result<()> {
 - [x] **Element-tree caching** — pluggable `Clock`-driven `CacheManager` memoises each window's UIA enumeration for a tunable TTL (default 500 ms), so repeat presses on a steady screen are instant. Toggle via `[performance] enable_caching` / `cache_ttl_ms`.
 - [x] **Settings dialog gains six new controls** for hint strategy, alphabet preset + modifiers, custom additions, scope mode, max elements, caching enable, and cache TTL. Window grew to 980×560 px.
 
-### In progress (unreleased)
+### Shipped (v0.5.0, upstream keyhop)
 
 - [x] **Modifier-aware hint actions** ([#7](https://github.com/rsaz/keyhop/issues/7)) — Ctrl + hint letter = double-click, Shift + hint letter = right-click (context menu). Modifier sampled only on the completing keystroke.
+- [x] **Auto-close and relaunch on MSI upgrade** ([#12](https://github.com/rsaz/keyhop/issues/12))
+- [x] Splash screen, store logo as tray icon, and a global hotkey (`Ctrl+Shift+,`) that opens Settings
+- [x] Settings dialog opens centered and always on top
 
-### Next up (v0.5.0) — Linux backend + signing
+### In progress (v0.6.0, unreleased)
+
+- [x] **Renamed to Jumpkey** (fork of keyhop): new crate, binary, config/log paths, startup entry and installer identity
+- [x] **Keyboard-layout-aware hint keys** (`[keyboard]` layout + geometry; `auto` reads the active Windows layout)
+- [x] **Finger-aware labels**: no repeated or same-finger consecutive keys (`[hints] consecutive_keys`), strongest fingers first
+- [x] **Center-out label order** (`[hints] order` = `center` | `cursor` | `reading`)
+- [x] **Callout badges** with a tail pointing at the element (`shape = "callout" | "rect"`), plus "Auto" badge-size checkboxes in Settings
+- [ ] New tray icon and branding artwork (the current art is still keyhop's)
+- [ ] Tag and publish the release
+
+### Next up — Windows
+
+- [ ] Microsoft Trusted Signing for the MSI + EXE (kills the SmartScreen "unknown publisher" warning; see [`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md))
+- [ ] Firefox accessibility-tree activation (Gecko uses a different IPC dance than Chromium's `WM_GETOBJECT`)
+- [ ] Polished tray icon (multi-resolution `.ico` instead of the procedural badge)
+- [ ] Hot-reload config without restarting (re-register hotkeys at runtime)
+- [ ] Per-color overrides exposed in the Settings dialog (today only badge backgrounds are editable)
+- [ ] Click-through overlay so non-target apps still see the mouse
+- [ ] Winget manifest (Windows)
+
+### Under consideration — Linux backend
 
 - [ ] Linux backend via AT-SPI (X11 first, then Wayland)
 - [ ] Linux global hotkey integration (X11 `XGrabKey` / Wayland portal)
 - [ ] Linux overlay rendering (X11 `_NET_WM_STATE_ABOVE` layered window first; layer-shell on Wayland later)
 - [ ] Linux tray icon via the StatusNotifierItem / AppIndicator protocol
 - [ ] Smoke-test on GNOME (Wayland), KDE (X11), and a tiling WM (i3 or Sway)
-- [ ] Microsoft Trusted Signing for the MSI + EXE (kills the SmartScreen "unknown publisher" warning; see [`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md))
-- [ ] Firefox accessibility-tree activation (Gecko uses a different IPC dance than Chromium's `WM_GETOBJECT`)
-
-### v0.6.0 — macOS backend
-
-- [ ] macOS backend via the Accessibility API (`AXUIElement`)
-- [ ] macOS global hotkeys via `RegisterEventHotKey` / `MASShortcut`-style API
-- [ ] macOS overlay (`NSWindow` with `NSWindowCollectionBehaviorCanJoinAllSpaces`)
-- [ ] macOS menu bar item with the same Settings / Pick / Quit affordances as the Windows tray
-- [ ] Notarized `.app` bundle build pipeline
-
-### v0.7.0 — Polish + cross-distro install
-
-- [ ] Polished tray icon (multi-resolution `.ico` instead of the procedural badge)
-- [ ] Hot-reload config without restarting (re-register hotkeys at runtime)
-- [ ] Per-color overrides exposed in the Settings dialog (today only badge backgrounds are editable)
-- [ ] Click-through overlay so non-target apps still see the mouse
-- [ ] Winget manifest (Windows)
 - [ ] Linux installer story: `.deb` + `.rpm` packages, plus a Flatpak manifest
 
 See [CHANGELOG.md](CHANGELOG.md) for release history.
@@ -344,7 +351,7 @@ cargo install --locked cargo-run cargo-wix
 scoop install wixtoolset3              # or grab WiX 3.14 from wixtoolset.org
 
 cargo script msi                       # full: cargo build --release + cargo wix
-cargo script msi-only                  # MSI only (assumes target/release/keyhop.exe)
+cargo script msi-only                  # MSI only (assumes target/release/jumpkey.exe)
 cargo script msi-show                  # ls target/wix/*.msi
 cargo script msi-clean                 # rm target/wix
 ```
@@ -359,3 +366,5 @@ Dual-licensed under either of:
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 
 at your option.
+
+Copyright (c) 2026 Richard Zampieri and Graham Doerksen. See [NOTICE](NOTICE).

@@ -24,8 +24,8 @@ Use the GitHub MCP `issue_read` tool to retrieve the issue and any requirements:
 server: user-github
 toolName: issue_read
 arguments:
-  owner: rsaz
-  repo: keyhop
+  owner: gdoerksen
+  repo: jumpkey
   issue_number: <N>
   method: get
 ```
@@ -36,8 +36,8 @@ Also fetch **comments** to check for any verified requirements or technical disc
 server: user-github
 toolName: issue_read
 arguments:
-  owner: rsaz
-  repo: keyhop
+  owner: gdoerksen
+  repo: jumpkey
   issue_number: <N>
   method: get_comments
 ```
@@ -131,7 +131,7 @@ After presenting the plan, invite the developer to:
 
 ### Make It Actionable
 - Steps should be concrete and in logical order
-- File paths should be actual paths in the keyhop codebase
+- File paths should be actual paths in the jumpkey codebase
 - Code snippets should show the real API or pattern (not abstract pseudocode)
 
 ### Be Realistic About Complexity
@@ -156,13 +156,13 @@ This helps the developer understand the conventions and copy working patterns.
 
 ## Codebase Context
 
-When generating plans for keyhop issues, be aware of:
+When generating plans for jumpkey issues, be aware of:
 
 - **Architecture:** Windows backend (`src/windows/`), core library (`src/lib.rs`), binary (`src/main.rs`)
 - **UI Automation:** `uiautomation` crate for element picking
 - **Hotkeys:** `global-hotkey` crate
 - **Overlay:** Win32 layered windows (`src/windows/overlay.rs`)
-- **Config:** TOML at `%APPDATA%\keyhop\config.toml`
+- **Config:** TOML at `%APPDATA%\jumpkey\config.toml`
 - **Build system:** `cargo-wix` for MSI, `Scripts.toml` for dev commands
 
 Use `SemanticSearch`, `Grep`, or `Read` to understand specific areas before generating the plan.

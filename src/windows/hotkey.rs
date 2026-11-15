@@ -8,7 +8,7 @@
 //! The underlying [`GlobalHotKeyManager`] uses a hidden Win32 message-only
 //! window to receive `WM_HOTKEY`. The owning thread must therefore run a
 //! Win32 message loop (`GetMessageW` / `DispatchMessageW`) for events to be
-//! delivered. The `keyhop` binary takes care of that.
+//! delivered. The `jumpkey` binary takes care of that.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -45,7 +45,7 @@ pub struct Hotkeys {
 }
 
 impl Hotkeys {
-    /// Register keyhop's two default chords:
+    /// Register jumpkey's two default chords:
     ///
     /// - `Ctrl + Shift + Space` → [`HotkeyAction::PickElement`]
     /// - `Ctrl + Alt + Space`   → [`HotkeyAction::PickWindow`]
@@ -145,7 +145,7 @@ impl Hotkeys {
     }
 
     /// Drain the global hotkey channel and return every action that fired
-    /// (in arrival order). Released events are ignored — keyhop only cares
+    /// (in arrival order). Released events are ignored — jumpkey only cares
     /// about the press edge.
     pub fn poll_actions(&self) -> Vec<HotkeyAction> {
         let receiver = GlobalHotKeyEvent::receiver();

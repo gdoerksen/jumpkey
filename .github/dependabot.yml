@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Keep Cargo dependencies current. Note: keyhop ships Windows-only binaries,
+  # Keep Cargo dependencies current. Note: jumpkey ships Windows-only binaries,
   # so transitive deps that are gated by `[target.'cfg(windows)'.dependencies]`
   # never compile into the shipped artifact even if Dependabot lists alerts
   # against their Linux-only sub-crates (e.g. glib via libappindicator).

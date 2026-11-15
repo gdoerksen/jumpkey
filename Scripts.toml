@@ -10,7 +10,7 @@ test = { command = "cargo test --all-features", env = { RUST_LOG = "warn" } }
 doc = "cargo doc --no-deps --open"
 
 # ---------------------------------------------------------------------------
-# Windows installer (MSI) — produces target/wix/Keyhop-<version>-x86_64.msi
+# Windows installer (MSI) — produces target/wix/Jumpkey-<version>-x86_64.msi
 #
 # `cargo wix` shells out to candle.exe / light.exe from the WiX Toolset 3.
 # Those binaries are *not* on PATH on a default Windows install. The
@@ -24,14 +24,14 @@ doc = "cargo doc --no-deps --open"
 #
 # Usage:
 #   cargo script msi          # full build: release exe + MSI
-#   cargo script msi-only     # just the MSI (assumes target/release/keyhop.exe exists)
+#   cargo script msi-only     # just the MSI (assumes target/release/jumpkey.exe exists)
 #   cargo script msi-clean    # wipe target/wix
 #   cargo script msi-show     # print the produced MSI's path + size
 # ---------------------------------------------------------------------------
 
 [scripts.msi]
 interpreter = "powershell"
-info = "Build keyhop.exe + Windows MSI installer for distribution"
+info = "Build jumpkey.exe + Windows MSI installer for distribution"
 command = """
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
@@ -51,7 +51,7 @@ cargo build --release --locked
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 cargo wix --no-build --nocapture
 if ($LASTEXITCODE -ne 0) { throw "cargo wix failed" }
-$msi = Get-ChildItem -Path target/wix -Filter "Keyhop-*-x86_64.msi" | Select-Object -First 1
+$msi = Get-ChildItem -Path target/wix -Filter "Jumpkey-*-x86_64.msi" | Select-Object -First 1
 if ($msi) {
     Write-Host ""
     Write-Host "MSI: $($msi.FullName) ($([math]::Round($msi.Length / 1MB, 2)) MB)"
@@ -60,7 +60,7 @@ if ($msi) {
 
 [scripts.msi-only]
 interpreter = "powershell"
-info = "Build only the MSI (assumes target/release/keyhop.exe is up to date)"
+info = "Build only the MSI (assumes target/release/jumpkey.exe is up to date)"
 command = """
 $ErrorActionPreference = 'Stop'
 if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
@@ -76,8 +76,8 @@ if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
     }
     $env:PATH = "$wix;$env:PATH"
 }
-if (-not (Test-Path "target/release/keyhop.exe")) {
-    throw "target/release/keyhop.exe not found. Run 'cargo script release' first, or use 'cargo script msi'."
+if (-not (Test-Path "target/release/jumpkey.exe")) {
+    throw "target/release/jumpkey.exe not found. Run 'cargo script release' first, or use 'cargo script msi'."
 }
 cargo wix --no-build --nocapture
 """
@@ -117,8 +117,8 @@ Get-ChildItem -Path target/wix -Filter "*.msi" | ForEach-Object {
 #
 # `cargo script` doesn't forward positional args after the script name —
 # only env vars via `--env KEY=VALUE`. We read the URL from `$env:URL`,
-# with `$env:KEYHOP_RELEASE_URL` as a fallback for the common case of
-# resolving the latest keyhop MSI.
+# with `$env:JUMPKEY_RELEASE_URL` as a fallback for the common case of
+# resolving the latest jumpkey MSI.
 #
 # Uses `curl.exe` (not PowerShell's `curl` alias for Invoke-WebRequest)
 # so the `-sI` head-only request actually returns the redirect headers.
@@ -128,8 +128,8 @@ Get-ChildItem -Path target/wix -Filter "*.msi" | ForEach-Object {
 #   cargo script get_url --env URL=<github-release-asset-url>
 #
 # Examples:
-#   cargo script get_url --env URL=https://github.com/rsaz/keyhop/releases/download/v0.3.0/Keyhop-0.3.0-x86_64.msi
-#   cargo script get_url --env URL=https://github.com/rsaz/keyhop/releases/download/v0.3.0/keyhop.exe
+#   cargo script get_url --env URL=https://github.com/gdoerksen/jumpkey/releases/download/v0.3.0/Jumpkey-0.3.0-x86_64.msi
+#   cargo script get_url --env URL=https://github.com/gdoerksen/jumpkey/releases/download/v0.3.0/jumpkey.exe
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ Get-ChildItem -Path target/wix -Filter "*.msi" | ForEach-Object {
 # A mismatch means one of two things:
 #   1. The R2 upload was corrupted or partial — re-upload via the
 #      Cloudflare dashboard at:
-#        keyhop / release / v<version> /
+#        jumpkey / release / v<version> /
 #      (see RELEASE_PROCESS.md § 2 for the click-by-click).
 #   2. Someone uploaded the wrong file to R2 (e.g. an older version).
 #      Same fix.
@@ -153,9 +153,9 @@ Get-ChildItem -Path target/wix -Filter "*.msi" | ForEach-Object {
 # Usage:
 #   cargo script verify-r2 --env VERSION=0.3.0
 #
-# Optional overrides (defaults match keyhop's current setup):
-#   --env GH_OWNER=rsaz       (GitHub repo owner)
-#   --env GH_REPO=keyhop      (GitHub repo name)
+# Optional overrides (defaults match jumpkey's current setup):
+#   --env GH_OWNER=gdoerksen       (GitHub repo owner)
+#   --env GH_REPO=jumpkey      (GitHub repo name)
 #   --env R2_BASE=https://dl.expresso-ts.com/release   (R2 public base URL)
 # ---------------------------------------------------------------------------
 
@@ -170,10 +170,10 @@ if (-not $version) {
     Write-Host "Example: cargo script verify-r2 --env VERSION=0.3.0"
     exit 0
 }
-$ghOwner = if ($env:GH_OWNER) { $env:GH_OWNER } else { 'rsaz' }
-$ghRepo  = if ($env:GH_REPO)  { $env:GH_REPO }  else { 'keyhop' }
+$ghOwner = if ($env:GH_OWNER) { $env:GH_OWNER } else { 'gdoerksen' }
+$ghRepo  = if ($env:GH_REPO)  { $env:GH_REPO }  else { 'jumpkey' }
 $r2Base  = if ($env:R2_BASE)  { $env:R2_BASE }  else { 'https://dl.expresso-ts.com/release' }
-$file    = "Keyhop-$version-x86_64.msi"
+$file    = "Jumpkey-$version-x86_64.msi"
 $ghUrl   = "https://github.com/$ghOwner/$ghRepo/releases/download/v$version/$file"
 $r2Url   = "$r2Base/v$version/$file"
 $ghTmp   = Join-Path $env:TEMP "verify-r2-gh.msi"
@@ -215,7 +215,7 @@ interpreter = "powershell"
 info = "Resolve a github.com release-asset URL to its current signed download URL (--env URL=...)"
 command = """
 $ErrorActionPreference = 'Stop'
-$url = if ($env:URL) { $env:URL } elseif ($env:KEYHOP_RELEASE_URL) { $env:KEYHOP_RELEASE_URL } else { $null }
+$url = if ($env:URL) { $env:URL } elseif ($env:JUMPKEY_RELEASE_URL) { $env:JUMPKEY_RELEASE_URL } else { $null }
 if (-not $url) {
     # Exit 0 (not 1) so cargo-script doesn't suppress stdout — it
     # currently hides script Write-Host output on non-zero exits and
@@ -224,7 +224,7 @@ if (-not $url) {
     Write-Host "Usage: cargo script get_url --env URL=<github-release-asset-url>"
     Write-Host ""
     Write-Host "Example:"
-    Write-Host "  cargo script get_url --env URL=https://github.com/rsaz/keyhop/releases/download/v0.3.0/Keyhop-0.3.0-x86_64.msi"
+    Write-Host "  cargo script get_url --env URL=https://github.com/gdoerksen/jumpkey/releases/download/v0.3.0/Jumpkey-0.3.0-x86_64.msi"
     exit 0
 }
 if ($url -notmatch '^https?://') {

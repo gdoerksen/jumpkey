@@ -1,6 +1,6 @@
 //! System tray icon and context menu.
 //!
-//! [`Tray`] mirrors keyhop's two leader chords as menu items so the user can
+//! [`Tray`] mirrors jumpkey's two leader chords as menu items so the user can
 //! discover and trigger them without remembering the hotkeys, and exposes a
 //! Quit entry that asks the message loop to exit. Events are delivered
 //! through the `tray-icon` crate's static channel and surfaced as
@@ -9,7 +9,7 @@
 //!
 //! The tray icon is generated procedurally as a 32×32 RGBA buffer (yellow
 //! background with a "K" glyph) so we don't have to ship an `.ico` asset.
-//! The icon doubles as a visual anchor that keyhop is running.
+//! The icon doubles as a visual anchor that jumpkey is running.
 
 use anyhow::{Context, Result};
 use tray_icon::{
@@ -53,7 +53,7 @@ struct TrayItems {
 }
 
 impl Tray {
-    /// Create the tray icon with keyhop's menu. Labels include the
+    /// Create the tray icon with jumpkey's menu. Labels include the
     /// configured hotkey chords so the user sees their actual bindings.
     /// Must be called on the thread that runs the Win32 message loop.
     pub fn build(hotkeys: &HotkeyBindings) -> Result<Self> {
@@ -64,7 +64,7 @@ impl Tray {
         );
         let pick_window =
             MenuItem::new(format!("Pick window\t{}", hotkeys.pick_window), false, None);
-        let about = MenuItem::new(concat!("keyhop v", env!("CARGO_PKG_VERSION")), false, None);
+        let about = MenuItem::new(concat!("jumpkey v", env!("CARGO_PKG_VERSION")), false, None);
         let settings = MenuItem::new(
             format!("Settings...\t{}", hotkeys.open_settings),
             true,
@@ -101,7 +101,7 @@ impl Tray {
 
         let icon = build_icon().context("building tray icon")?;
         let tooltip = format!(
-            "keyhop v{} — {}",
+            "jumpkey v{} — {}",
             env!("CARGO_PKG_VERSION"),
             hotkeys.pick_element,
         );
@@ -147,7 +147,7 @@ impl Tray {
             .settings
             .set_text(format!("Settings...\t{}", hotkeys.open_settings));
         let tooltip = format!(
-            "keyhop v{} — {}",
+            "jumpkey v{} — {}",
             env!("CARGO_PKG_VERSION"),
             hotkeys.pick_element,
         );

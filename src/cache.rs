@@ -1,6 +1,6 @@
 //! Time-bounded cache of accessibility-tree enumeration results.
 //!
-//! UIA tree walks are by far the most expensive thing keyhop does on a
+//! UIA tree walks are by far the most expensive thing jumpkey does on a
 //! single hotkey press — for content-rich pages (Gmail, GitHub, large
 //! dashboards) we routinely descend 25+ levels and visit a few thousand
 //! nodes. When the user fires the hotkey, dismisses with `Esc`, and

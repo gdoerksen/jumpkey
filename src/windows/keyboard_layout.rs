@@ -15,7 +15,7 @@
 //!   detected layout, which makes presets fall back to the QWERTY
 //!   character on that key; [`key_chars`] then accepts the QWERTY
 //!   character for the same physical key so those hints stay typeable.
-//! - Windows updates a background thread's layout lazily, so keyhop's own
+//! - Windows updates a background thread's layout lazily, so jumpkey's own
 //!   thread can report a stale layout at hotkey time. We read the layout
 //!   of the *foreground window's* thread instead (the app the user is
 //!   typing in) via [`capture_active_layout`], and keystroke translation
@@ -135,7 +135,7 @@ pub fn capture_active_layout() -> isize {
 
 /// Id of the most recently captured layout, capturing now if nothing was
 /// captured yet. Unlike [`capture_active_layout`] this doesn't re-read the
-/// foreground window, so it's safe to call while one of keyhop's own
+/// foreground window, so it's safe to call while one of jumpkey's own
 /// windows (Settings) is in front — Windows may report a stale layout
 /// for those.
 pub fn last_layout_id() -> isize {

@@ -1,4 +1,6 @@
-# Keyhop branding assets
+# Jumpkey branding assets
+
+> **Not yet updated.** The image files here still show the original **KEYHOP** wordmark and the green "K" tray icon. New artwork is a follow-up.
 
 Marketing artwork, app screenshots, and source brand references used for
 Microsoft Store submissions, GitHub Release banners, and the project
@@ -8,14 +10,14 @@ website. **Do not bake these into the binary** — runtime icons live in
 ## Brand colors (canonical)
 
 The visual identity is driven by what users actually see on screen when
-they run keyhop. The canonical palette is taken from the live app:
+they run jumpkey. The canonical palette is taken from the live app:
 
 | Token | Hex | Where it appears |
 |---|---|---|
 | **Element badge yellow** | `#FFE500` | Hint label background when picking elements (config: `element_badge_bg`) |
 | **Window badge blue** | `#33AAFF` | Hint label background in the window picker (config: `window_badge_bg`) |
 | **Hint label text** | `#000000` | Foreground letters on every hint badge |
-| **Tray icon green-on-yellow** | green letter `K` on yellow square | The `keyhop` system tray icon |
+| **Tray icon green-on-yellow** | green letter `K` on yellow square | The `jumpkey` system tray icon |
 | **Surface dark** | `#0b0e16` to `#1a1d2a` | Settings dialog dark surfaces and marketing backgrounds |
 
 Any new marketing art should lean on **yellow + blue + black** (the
@@ -26,7 +28,7 @@ hint colors) rather than introducing new accents.
 | File | Dimensions | Purpose |
 |---|---|---|
 | `store-logo-1080.png` | 1080 × 1080 | **Microsoft Store 1:1 box art** (required) — matte black keycap with white "K" + yellow `HK` hint label badge |
-| `poster-art-1440x2160.png` | 1440 × 2160 | **Microsoft Store 2:3 poster art** (recommended) — KEYHOP wordmark above a keyboard with floating yellow element-hint badges + blue window-picker badges, matching the live app palette |
+| `poster-art-1440x2160.png` | 1440 × 2160 | **Microsoft Store 2:3 poster art** (recommended) — JUMPKEY wordmark above a keyboard with floating yellow element-hint badges + blue window-picker badges, matching the live app palette |
 | `tray-icon-source.png` | tiny | Reference capture of the actual tray icon, for color-matching new art |
 | `screenshots/settings-and-tray-menu.png` | landscape | **Microsoft Store screenshot candidate**: shows the Settings dialog (Hotkeys, Hints alphabet, Colors, Opacity, Launch at startup) and the tray context menu side-by-side |
 

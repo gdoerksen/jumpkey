@@ -1,9 +1,9 @@
-//! Filesystem watcher for `%APPDATA%\keyhop\config.toml`.
+//! Filesystem watcher for `%APPDATA%\jumpkey\config.toml`.
 //!
 //! When the file changes on disk — whether the Settings dialog wrote
 //! it, the user hand-edited `config.toml` in their editor of choice, a
 //! cloud-sync agent dropped in a new copy, or a future CLI subcommand
-//! mutated it — we want the running `keyhop` instance to pick up the
+//! mutated it — we want the running `jumpkey` instance to pick up the
 //! new values without a restart. This module owns the
 //! [`notify`]-backed watcher and the debounce timer that turns a burst
 //! of write events into a single "reload now" signal.
@@ -42,7 +42,7 @@ use crate::config::Config;
 
 /// Custom thread-message id posted to the main thread when a
 /// debounced config-file change is ready to apply. We add `1` to
-/// `WM_USER` so the value (`0x0401`) is unique within keyhop's
+/// `WM_USER` so the value (`0x0401`) is unique within jumpkey's
 /// message namespace and stays comfortably below `WM_APP` so other
 /// libraries (`global-hotkey`, `tray-icon`) can't collide.
 pub const WM_USER_RELOAD_CONFIG: u32 = WM_USER + 1;

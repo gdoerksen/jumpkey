@@ -1,13 +1,13 @@
 <?xml version='1.0' encoding='windows-1252'?>
 <!--
-  WiX installer source for keyhop. Built by cargo-wix:
+  WiX installer source for jumpkey. Built by cargo-wix:
       cargo wix
   See <https://github.com/volks73/cargo-wix>.
 
   Customizations vs. the cargo-wix init template:
-    * Display name "Keyhop" (capitalized) for ARP / Start Menu UX.
+    * Display name "Jumpkey" (capitalized) for ARP / Start Menu UX.
     * Per-user install — no UAC prompt required. Installs to
-      %LOCALAPPDATA%\Keyhop and modifies the user PATH only.
+      %LOCALAPPDATA%\Jumpkey and modifies the user PATH only.
     * Single MSI Component for the binary, plus separate Components for
       the license sidecar, the Start Menu shortcut, and the PATH entry.
     * Full ARP metadata (DisplayName / Publisher / Version /
@@ -15,9 +15,9 @@
       add ARPURLINFOABOUT / ARPHELPLINK / ARPURLUPDATEINFO /
       ARPNOMODIFY / ARPNOREPAIR so users get Help link + "About" link
       and the entry is non-modifiable).
-    * A custom action terminates any running keyhop.exe before
+    * A custom action terminates any running jumpkey.exe before
       InstallValidate so the "Files In Use" dialog never appears.
-      A Type-18 custom action relaunches keyhop.exe after the
+      A Type-18 custom action relaunches jumpkey.exe after the
       upgrade completes.
     * No EULA dialog. Microsoft Store only checks `msiexec /qn`
       silent install, which works regardless of UI; an EULA would
@@ -25,25 +25,25 @@
       installed alongside the binary as a sidecar.
 -->
 
-<!-- Per-user install: %LOCALAPPDATA%\Keyhop — no arch-specific
+<!-- Per-user install: %LOCALAPPDATA%\Jumpkey — no arch-specific
      Program Files folder needed. -->
 
 <Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
 
     <Product
         Id='*'
-        Name='Keyhop'
-        UpgradeCode='49555F40-7E07-468A-8307-AE8FCEEB63DA'
-        Manufacturer='Richard Zampieri'
+        Name='Jumpkey'
+        UpgradeCode='88E032F2-16C4-4DA7-B89A-AC22BA7C1306'
+        Manufacturer='Graham Doerksen'
         Language='1033'
         Codepage='1252'
         Version='$(var.Version)'>
 
         <Package Id='*'
             Keywords='Installer'
-            Description='Keyhop $(var.Version) installer'
+            Description='Jumpkey $(var.Version) installer'
             Comments='System-wide keyboard navigation overlay. Drive your desktop without the mouse.'
-            Manufacturer='Richard Zampieri'
+            Manufacturer='Graham Doerksen'
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
@@ -56,45 +56,45 @@
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <!--
-          Kill any running keyhop.exe before InstallValidate so the
+          Kill any running jumpkey.exe before InstallValidate so the
           "Files In Use" dialog never appears. Return="ignore" lets
-          the install proceed even when keyhop is not running (taskkill
+          the install proceed even when jumpkey is not running (taskkill
           exits non-zero if the process is not found).
         -->
         <SetProperty Id='CLOSEKHCMD' Value='[SystemFolder]cmd.exe'
                      After='CostFinalize' Sequence='execute' />
         <CustomAction
-            Id='CloseKeyhop'
+            Id='CloseJumpkey'
             Property='CLOSEKHCMD'
-            ExeCommand='/c taskkill /f /im keyhop.exe'
+            ExeCommand='/c taskkill /f /im jumpkey.exe'
             Return='ignore' />
 
         <!--
-          Relaunch keyhop.exe after an upgrade so the user does not
+          Relaunch jumpkey.exe after an upgrade so the user does not
           have to start it manually. Runs only when upgrading from an
           older version (WIX_UPGRADE_DETECTED), not on fresh install
           or uninstall. asyncNoWait lets the installer exit immediately
-          without waiting for keyhop's message loop.
+          without waiting for jumpkey's message loop.
         -->
         <CustomAction
-            Id='LaunchKeyhop'
+            Id='LaunchJumpkey'
             FileKey='exe0'
             ExeCommand=''
             Return='asyncNoWait' />
 
         <InstallExecuteSequence>
-            <Custom Action='CloseKeyhop' Before='InstallValidate'>1</Custom>
-            <Custom Action='LaunchKeyhop' After='InstallFinalize'>WIX_UPGRADE_DETECTED</Custom>
+            <Custom Action='CloseJumpkey' Before='InstallValidate'>1</Custom>
+            <Custom Action='LaunchJumpkey' After='InstallFinalize'>WIX_UPGRADE_DETECTED</Custom>
         </InstallExecuteSequence>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='Keyhop Installation'/>
+        <Property Id='DiskPrompt' Value='Jumpkey Installation'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='LocalAppDataFolder'>
-                <Directory Id='APPLICATIONFOLDER' Name='Keyhop'>
+                <Directory Id='APPLICATIONFOLDER' Name='Jumpkey'>
 
-                    <Component Id='License' Guid='1D4E317A-41A8-4CE5-AF81-F2CC0F6126CC'>
+                    <Component Id='License' Guid='650BAA18-E420-423D-B724-729A09BCA56A'>
                         <File
                             Id='LicenseFile'
                             Name='LICENSE.txt'
@@ -102,7 +102,7 @@
                             Source='LICENSE-MIT'/>
                         <RegistryValue
                             Root='HKCU'
-                            Key='Software\Keyhop'
+                            Key='Software\Jumpkey'
                             Name='license'
                             Type='integer'
                             Value='1'
@@ -111,7 +111,7 @@
                     </Component>
 
                     <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='B7BFAB6F-3C97-4B88-A4EE-0F292CD0D018'>
+                        <Component Id='Path' Guid='2395308F-A537-4624-9DFF-303BEDBB1B3E'>
                             <Environment
                                 Id='PATH'
                                 Name='PATH'
@@ -122,28 +122,28 @@
                                 System='no'/>
                             <RegistryValue
                                 Root='HKCU'
-                                Key='Software\Keyhop'
+                                Key='Software\Jumpkey'
                                 Name='path'
                                 Type='integer'
                                 Value='1'
                                 KeyPath='yes'/>
                         </Component>
-                        <Component Id='binary0' Guid='71057135-C186-4C0A-8691-A57392B274D1'>
+                        <Component Id='binary0' Guid='1A67D027-5B5C-44E1-805A-7B9B2C0ABDD0'>
                             <File
                                 Id='exe0'
-                                Name='keyhop.exe'
+                                Name='jumpkey.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\keyhop.exe'/>
+                                Source='$(var.CargoTargetBinDir)\jumpkey.exe'/>
                             <Shortcut
-                                Id='KeyhopStartMenuShortcut'
+                                Id='JumpkeyStartMenuShortcut'
                                 Directory='ApplicationProgramsFolder'
-                                Name='Keyhop'
+                                Name='Jumpkey'
                                 Description='System-wide keyboard navigation overlay'
                                 WorkingDirectory='APPLICATIONFOLDER'
-                                Target='[Bin]keyhop.exe'/>
+                                Target='[Bin]jumpkey.exe'/>
                             <RegistryValue
                                 Root='HKCU'
-                                Key='Software\Keyhop'
+                                Key='Software\Jumpkey'
                                 Name='exe'
                                 Type='integer'
                                 Value='1'
@@ -162,12 +162,12 @@
               the per-user KeyPath that ICE69 requires.
             -->
             <Directory Id='ProgramMenuFolder'>
-                <Directory Id='ApplicationProgramsFolder' Name='Keyhop'>
+                <Directory Id='ApplicationProgramsFolder' Name='Jumpkey'>
                     <Component Id='ApplicationFolderCleanup' Guid='*'>
                         <RemoveFolder Id='RemoveApplicationProgramsFolder' On='uninstall'/>
                         <RegistryValue
                             Root='HKCU'
-                            Key='Software\Keyhop'
+                            Key='Software\Jumpkey'
                             Name='installed'
                             Type='integer'
                             Value='1'
@@ -180,7 +180,7 @@
         <Feature
             Id='Binaries'
             Title='Application'
-            Description='Installs keyhop.exe, the LICENSE file, and a Start Menu shortcut.'
+            Description='Installs jumpkey.exe, the LICENSE file, and a Start Menu shortcut.'
             Level='1'
             ConfigurableDirectory='APPLICATIONFOLDER'
             AllowAdvertise='no'
@@ -194,7 +194,7 @@
             <Feature
                 Id='Environment'
                 Title='PATH Environment Variable'
-                Description='Adds the install location to the user PATH so `keyhop` can be invoked from any terminal (including `keyhop --close`).'
+                Description='Adds the install location to the user PATH so `jumpkey` can be invoked from any terminal (including `jumpkey --close`).'
                 Level='1'
                 Absent='allow'>
                 <ComponentRef Id='Path'/>
@@ -211,10 +211,10 @@
           Modify/Repair buttons (we ship no per-feature toggles users
           would meaningfully want to flip post-install).
         -->
-        <Property Id='ARPHELPLINK' Value='https://github.com/rsaz/keyhop'/>
-        <Property Id='ARPURLINFOABOUT' Value='https://github.com/rsaz/keyhop'/>
-        <Property Id='ARPURLUPDATEINFO' Value='https://github.com/rsaz/keyhop/releases'/>
-        <Property Id='ARPCONTACT' Value='Richard Zampieri'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/gdoerksen/jumpkey'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/gdoerksen/jumpkey'/>
+        <Property Id='ARPURLUPDATEINFO' Value='https://github.com/gdoerksen/jumpkey/releases'/>
+        <Property Id='ARPCONTACT' Value='Graham Doerksen'/>
         <Property Id='ARPNOMODIFY' Value='1'/>
         <Property Id='ARPNOREPAIR' Value='1'/>
 

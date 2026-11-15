@@ -1,6 +1,11 @@
-# Release Process for keyhop
+# Release Process for jumpkey
 
-How to cut a new keyhop release and refresh the Microsoft Store submission.
+> **Fork notice.** This document was inherited from the upstream `keyhop` project. The Cloudflare R2 bucket,
+> the `dl.expresso-ts.com` host, the Microsoft Store listing and the Trusted Signing account named here
+> belong to the original author. Jumpkey does not have them yet; treat these values as placeholders and
+> replace them with your own before following the steps.
+
+How to cut a new jumpkey release and refresh the Microsoft Store submission.
 
 For the field-by-field Partner Center configuration (silent install switch,
 ARP fields, code-sign status), see [`docs/MICROSOFT_STORE.md`](docs/MICROSOFT_STORE.md).
@@ -8,13 +13,13 @@ For the signing pipeline, see [`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md).
 
 ## Two distribution channels, one source of truth
 
-Every keyhop release ships the same MSI bytes through two independent
+Every jumpkey release ships the same MSI bytes through two independent
 channels:
 
 | Channel | URL pattern | Purpose | Notes |
 |---|---|---|---|
-| **Cloudflare R2** *(canonical for Microsoft Store)* | `https://dl.expresso-ts.com/release/v<version>/Keyhop-<version>-x86_64.msi` | The URL pasted into Partner Center | Stable hostname, no expiring tokens, free egress, TLS 1.2+ enforced |
-| **GitHub Releases** *(canonical for direct downloads)* | `https://github.com/rsaz/keyhop/releases/download/v<version>/Keyhop-<version>-x86_64.msi` | The URL referenced from the README and CHANGELOG, source of bytes for R2 | Per-tag immutable, also hosts `keyhop.exe` portable build |
+| **Cloudflare R2** *(canonical for Microsoft Store)* | `https://dl.expresso-ts.com/release/v<version>/Jumpkey-<version>-x86_64.msi` | The URL pasted into Partner Center | Stable hostname, no expiring tokens, free egress, TLS 1.2+ enforced |
+| **GitHub Releases** *(canonical for direct downloads)* | `https://github.com/gdoerksen/jumpkey/releases/download/v<version>/Jumpkey-<version>-x86_64.msi` | The URL referenced from the README and CHANGELOG, source of bytes for R2 | Per-tag immutable, also hosts `jumpkey.exe` portable build |
 
 The same SHA256-identical MSI lives at both URLs. R2 is the URL Microsoft
 Store stores in the submission manifest; GitHub Releases is the URL
@@ -36,21 +41,21 @@ automatically.
 3. **Build and smoke-test the binary:**
    ```powershell
    cargo script release
-   .\target\release\keyhop.exe
+   .\target\release\jumpkey.exe
    ```
 
 4. **Build the MSI** (requires WiX Toolset 3 — `scoop install wixtoolset3`):
    ```powershell
    cargo script msi
    ```
-   Produces `target\wix\Keyhop-<version>-x86_64.msi`. Verify silent install
+   Produces `target\wix\Jumpkey-<version>-x86_64.msi`. Verify silent install
    locally before publishing:
    ```powershell
-   msiexec /i target\wix\Keyhop-0.3.0-x86_64.msi /qn
+   msiexec /i target\wix\Jumpkey-0.3.0-x86_64.msi /qn
    ```
    The install must complete with **only a UAC prompt** — no installer UI.
    Confirm the ARP entry shows up under
-   `Settings → Apps → Installed apps → Keyhop`, then uninstall it.
+   `Settings → Apps → Installed apps → Jumpkey`, then uninstall it.
 
 5. **Commit, tag, and push:**
    ```powershell
@@ -61,12 +66,12 @@ automatically.
    ```
 
 6. **Publish the GitHub Release.** The `.github/workflows/release.yml`
-   workflow fires on tag push, builds both `keyhop.exe` and the MSI, and
+   workflow fires on tag push, builds both `jumpkey.exe` and the MSI, and
    attaches them to the release via `softprops/action-gh-release@v3`. If
    you ever need to do it manually:
    ```powershell
    gh release create v0.3.0 --title "v0.3.0 — short headline" --notes-file CHANGELOG.md
-   gh release upload v0.3.0 target\release\keyhop.exe target\wix\Keyhop-0.3.0-x86_64.msi
+   gh release upload v0.3.0 target\release\jumpkey.exe target\wix\Jumpkey-0.3.0-x86_64.msi
    ```
 
 ## 2. Mirror the MSI to Cloudflare R2
@@ -85,20 +90,20 @@ cannot provide. We mirror to R2 specifically for that purpose.
 ### Generate the SHA256 sidecar
 
 ```powershell
-$msi = "target\wix\Keyhop-0.3.0-x86_64.msi"
+$msi = "target\wix\Jumpkey-0.3.0-x86_64.msi"
 (Get-FileHash $msi -Algorithm SHA256).Hash | Set-Content "$msi.sha256"
 ```
 
 ### Upload via Cloudflare dashboard (current manual flow)
 
-1. [Cloudflare dashboard](https://dash.cloudflare.com) → **R2 Object Storage** → bucket **`keyhop`**
+1. [Cloudflare dashboard](https://dash.cloudflare.com) → **R2 Object Storage** → bucket **`jumpkey`**
 2. Navigate to `release/`. If a folder named `v<version>` does not yet
    exist, click **+ Add directory** → name it (e.g. `v0.3.0`) → Create.
 3. Double-click into `v<version>/`. Breadcrumb should read
-   `keyhop / release / v<version> /`.
+   `jumpkey / release / v<version> /`.
 4. **Upload** → drag in **both** files:
-   - `Keyhop-<version>-x86_64.msi`
-   - `Keyhop-<version>-x86_64.msi.sha256`
+   - `Jumpkey-<version>-x86_64.msi`
+   - `Jumpkey-<version>-x86_64.msi.sha256`
 
 R2 enforces TLS 1.2+ on the custom domain (`dl.expresso-ts.com`); we set
 that explicitly when the bucket was provisioned.
@@ -123,11 +128,11 @@ something corrupted the upload — re-upload before continuing.
 
 ## 3. Update the Microsoft Store submission
 
-1. Open the keyhop product in [Microsoft Partner Center](https://partner.microsoft.com/dashboard/apps-and-games/overview).
+1. Open the jumpkey product in [Microsoft Partner Center](https://partner.microsoft.com/dashboard/apps-and-games/overview).
 2. Start a new submission → **Packages**.
 3. Replace the package URL with the new R2 URL:
    ```text
-   https://dl.expresso-ts.com/release/v0.3.0/Keyhop-0.3.0-x86_64.msi
+   https://dl.expresso-ts.com/release/v0.3.0/Jumpkey-0.3.0-x86_64.msi
    ```
 4. Verify the rest of the package metadata (silent install switch,
    installer type, ARP details) — see
@@ -138,7 +143,7 @@ something corrupted the upload — re-upload before continuing.
 ## 4. After certification
 
 - Update the README install snippet's version number if the major/minor
-  changed (`msiexec /i Keyhop-X.Y.Z-x86_64.msi /qn`).
+  changed (`msiexec /i Jumpkey-X.Y.Z-x86_64.msi /qn`).
 - If signing was added in this release, remove the "unsigned binary"
   note from the release template per `docs/CODE_SIGNING.md`.
 - **Do not delete** the previous version's R2 folder until Microsoft

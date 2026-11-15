@@ -1,6 +1,11 @@
-# Microsoft Store submission for keyhop
+# Microsoft Store submission for jumpkey
 
-This is the operations runbook for the keyhop **MSI/EXE Win32** listing
+> **Fork notice.** This document was inherited from the upstream `keyhop` project. The Cloudflare R2 bucket,
+> the `dl.expresso-ts.com` host, the Microsoft Store listing and the Trusted Signing account named here
+> belong to the original author. Jumpkey does not have them yet; treat these values as placeholders and
+> replace them with your own before following the steps.
+
+This is the operations runbook for the jumpkey **MSI/EXE Win32** listing
 on the Microsoft Store. It captures the exact Partner Center field
 values, why they're set the way they are, and what to do when the
 automated validator complains.
@@ -13,7 +18,7 @@ signing (a Store recommendation; not yet implemented), see
 ## Why MSI/EXE and not MSIX
 
 The Store accepts three Win32 packaging formats: **MSI**, **EXE**, and
-**MSIX**. We ship the WiX-generated MSI for one reason: keyhop installs a
+**MSIX**. We ship the WiX-generated MSI for one reason: jumpkey installs a
 **system-wide low-level keyboard hook** and registers a global hotkey
 through `RegisterHotKey`. MSIX containers run apps inside an AppContainer
 sandbox that blocks both APIs unless you declare
@@ -30,15 +35,15 @@ behind the custom domain `dl.expresso-ts.com`.
 
 | Channel | URL pattern | Used for |
 |---|---|---|
-| **R2** *(canonical for Partner Center)* | `https://dl.expresso-ts.com/release/v<version>/Keyhop-<version>-x86_64.msi` | The URL pasted into Partner Center |
-| **GitHub Releases** *(canonical for humans)* | `https://github.com/rsaz/keyhop/releases/download/v<version>/Keyhop-<version>-x86_64.msi` | The URL referenced from the README, source of bytes mirrored to R2 |
+| **R2** *(canonical for Partner Center)* | `https://dl.expresso-ts.com/release/v<version>/Jumpkey-<version>-x86_64.msi` | The URL pasted into Partner Center |
+| **GitHub Releases** *(canonical for humans)* | `https://github.com/gdoerksen/jumpkey/releases/download/v<version>/Jumpkey-<version>-x86_64.msi` | The URL referenced from the README, source of bytes mirrored to R2 |
 
-R2 is configured for the `keyhop` bucket on the ExpressoTS Cloudflare
+R2 is configured for the `jumpkey` bucket on the ExpressoTS Cloudflare
 account:
 
 - Custom domain `dl.expresso-ts.com`, **TLS 1.2+ enforced**
 - `r2.dev` managed subdomain **disabled** (so the bucket is only reachable via the custom domain)
-- Layout: `release/v<version>/Keyhop-<version>-x86_64.msi` + `.sha256` sidecar
+- Layout: `release/v<version>/Jumpkey-<version>-x86_64.msi` + `.sha256` sidecar
 - Per-release subfolders kept indefinitely (Partner Center re-validates the URL+SHA256 pair until each submission is retired — see [`../RELEASE_PROCESS.md`](../RELEASE_PROCESS.md#4-after-certification))
 
 ### Why not just point Partner Center at the github.com URL?
@@ -57,11 +62,11 @@ clicking through the package URL during certification.
 ### Hosting alternatives, ranked
 
 Documented so future-you can make an informed call if R2 ever stops
-working for us. **`$0` numbers assume keyhop's actual traffic** (~1 MB
+working for us. **`$0` numbers assume jumpkey's actual traffic** (~1 MB
 MSI, a few hundred Store re-validations + user downloads per month —
 well under any free tier).
 
-| Host | Free tier | Stable URL pattern | Effort per release | Real cost for keyhop |
+| Host | Free tier | Stable URL pattern | Effort per release | Real cost for jumpkey |
 |---|---|---|---|---|
 | **Cloudflare R2** *(current)* | 10 GB storage, **unlimited free egress** forever, 1 M Class A ops/mo | `dl.expresso-ts.com/release/v<version>/...` | one upload to R2 per release (manual today, automation pending) | **$0** |
 | **GitHub Releases** *(also live, as bytes source)* | unlimited public, no egress cap | `github.com/<owner>/<repo>/releases/download/<tag>/<file>` | already automated in `release.yml` | **$0** |
@@ -80,7 +85,7 @@ public installer.
 The R2 upload is currently a manual dashboard drag-and-drop. To
 automate it inside `.github/workflows/release.yml`, we need:
 
-1. A bucket-scoped R2 API token (Cloudflare dashboard → R2 → **Manage R2 API Tokens** → permissions `Object Read & Write`, scoped to the `keyhop` bucket only)
+1. A bucket-scoped R2 API token (Cloudflare dashboard → R2 → **Manage R2 API Tokens** → permissions `Object Read & Write`, scoped to the `jumpkey` bucket only)
 2. Four GitHub Actions repository secrets: `R2_ACCOUNT_ID`,
    `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_PUBLIC_BASE_URL=https://dl.expresso-ts.com`
 3. A new step in `release.yml` between "Build MSI installer" and
@@ -93,11 +98,11 @@ automate it inside `.github/workflows/release.yml`, we need:
        AWS_DEFAULT_REGION:    auto
      run: |
        VERSION=${GITHUB_REF_NAME#v}
-       MSI=target/wix/Keyhop-${VERSION}-x86_64.msi
+       MSI=target/wix/Jumpkey-${VERSION}-x86_64.msi
        sha256sum "$MSI" | awk '{print $1}' > "$MSI.sha256"
-       aws s3 cp "$MSI"        "s3://keyhop/release/v${VERSION}/" \
+       aws s3 cp "$MSI"        "s3://jumpkey/release/v${VERSION}/" \
          --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-       aws s3 cp "$MSI.sha256" "s3://keyhop/release/v${VERSION}/" \
+       aws s3 cp "$MSI.sha256" "s3://jumpkey/release/v${VERSION}/" \
          --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
    ```
    (R2 speaks the S3 API, so the AWS CLI works without `wrangler` if
@@ -108,7 +113,7 @@ Until that's in place, the dashboard upload is documented in
 
 ## Partner Center field values
 
-Open the keyhop product in
+Open the jumpkey product in
 [Partner Center → Apps and games](https://partner.microsoft.com/dashboard/apps-and-games/overview)
 → **New submission** → **Packages**, paste the package URL, then expand
 the package row to fill in the installer details:
@@ -116,7 +121,7 @@ the package row to fill in the installer details:
 ### Package URL
 
 ```text
-https://dl.expresso-ts.com/release/v0.3.0/Keyhop-0.3.0-x86_64.msi
+https://dl.expresso-ts.com/release/v0.3.0/Jumpkey-0.3.0-x86_64.msi
 ```
 
 Bump the version on every release. The MSI must be uploaded to R2
@@ -138,22 +143,22 @@ anywhere in the chain, which is the whole reason we mirror to it.
 | **Silent install command** | `/qn` | Maps to `msiexec /i <pkg> /qn`. Required by Store policy 10.2.9. |
 | **Silent install with progress** | `/qb!-` | Optional. Hides the cancel button; shows a progress bar without user interaction. |
 | **Custom install command** | *(blank)* | The MSI handles install; no wrapper needed. |
-| **Default install location** | *(blank)* | The MSI installs to `%ProgramFiles%\Keyhop\` — Windows Installer reports this back. |
+| **Default install location** | *(blank)* | The MSI installs to `%ProgramFiles%\Jumpkey\` — Windows Installer reports this back. |
 | **Product code** | auto-detected | Partner Center reads it from the MSI's `Product/@Id`. Don't override. |
 | **Upgrade code** | `49555F40-7E07-468A-8307-AE8FCEEB63DA` | Matches `wix/main.wxs`. **Never change this** — it's how Windows recognizes upgrades vs. fresh installs across versions. |
-| **Add/Remove Programs entry** | auto-populated | Comes from the MSI's `<Product>` + `<Package>` attributes (Name=`Keyhop`, Manufacturer=`Richard Zampieri`, Version=`<var.Version>`). |
+| **Add/Remove Programs entry** | auto-populated | Comes from the MSI's `<Product>` + `<Package>` attributes (Name=`Jumpkey`, Manufacturer=`Richard Zampieri`, Version=`<var.Version>`). |
 | **Code signature** | *(none today)* | See [`CODE_SIGNING.md`](CODE_SIGNING.md). Currently flagged as a recommendation, not a blocker. |
 
 ### Listing metadata
 
 | Field | Value |
 |---|---|
-| App name | `Keyhop` |
+| App name | `Jumpkey` |
 | Publisher | `Richard Zampieri` |
 | Category | `Productivity` (sub: `Personal finance` is wrong; pick `Personal assistance` or `Utilities & tools` if Productivity isn't fine-grained enough) |
-| Privacy policy URL | `https://github.com/rsaz/keyhop/blob/main/PRIVACY_POLICY.md` |
-| Support contact info | `https://github.com/rsaz/keyhop/issues` |
-| Age rating | Fill in the IARC questionnaire — keyhop has no UGC, no ads, no in-app purchase. |
+| Privacy policy URL | `https://github.com/gdoerksen/jumpkey/blob/main/PRIVACY_POLICY.md` |
+| Support contact info | `https://github.com/gdoerksen/jumpkey/issues` |
+| Age rating | Fill in the IARC questionnaire — jumpkey has no UGC, no ads, no in-app purchase. |
 
 ## Validation failures and how to fix them
 
@@ -193,13 +198,13 @@ validation; this normally clears itself.
 If silent install succeeded but ARP still fails, inspect locally:
 
 ```powershell
-msiexec /i target\wix\Keyhop-0.3.0-x86_64.msi /qn
+msiexec /i target\wix\Jumpkey-0.3.0-x86_64.msi /qn
 Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' |
-    Where-Object { $_.DisplayName -eq 'Keyhop' } |
+    Where-Object { $_.DisplayName -eq 'Jumpkey' } |
     Select-Object DisplayName, Publisher, DisplayVersion, UninstallString
 ```
 
-You should see `Keyhop`, `Richard Zampieri`, the version, and an
+You should see `Jumpkey`, `Richard Zampieri`, the version, and an
 `UninstallString` like `MsiExec.exe /X{...}`. If any are blank, the MSI
 is wrong — check `<Product>` and `<Package>` in `wix/main.wxs`.
 
@@ -208,7 +213,7 @@ is wrong — check `<Product>` and `<Package>` in `wix/main.wxs`.
 > *Your app should only add a single entry to the programs list.*
 
 Same root cause as ARP — if silent install fails, this also fails.
-Independently, this check counts ARP entries; the keyhop MSI registers
+Independently, this check counts ARP entries; the jumpkey MSI registers
 exactly one. We don't bundle anything. If this ever fails on its own,
 something is *very* wrong.
 

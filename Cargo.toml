@@ -1,14 +1,14 @@
 [package]
-name = "keyhop"
-description = "System-wide keyboard navigation overlay: drive your desktop without the mouse."
-version = "0.5.0"
+name = "jumpkey"
+description = "Navigate and click anywhere on Windows without touching the mouse."
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT OR Apache-2.0"
-authors = ["Richard Zampieri <br.developer@gmail.com>"]
-repository = "https://github.com/rsaz/keyhop"
-homepage = "https://github.com/rsaz/keyhop"
-documentation = "https://docs.rs/keyhop"
+authors = ["Graham Doerksen <46031209+gdoerksen@users.noreply.github.com>", "Richard Zampieri <br.developer@gmail.com>"]
+repository = "https://github.com/gdoerksen/jumpkey"
+homepage = "https://github.com/gdoerksen/jumpkey"
+documentation = "https://docs.rs/jumpkey"
 readme = "README.md"
 keywords = ["keyboard", "accessibility", "productivity", "automation", "hotkey"]
 categories = ["accessibility", "gui", "os"]
@@ -29,7 +29,7 @@ smallvec = "1.15.1"
 
 # Windows-only deps. Non-Windows targets compile the lib without these (and
 # without the `crate::windows` module), which keeps `cargo check` honest on
-# Linux/macOS even before native backends exist.
+# Linux even before any native backend exists.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
@@ -69,7 +69,7 @@ notify = "6"
 png = "0.17"
 
 [features]
-# Exposes `keyhop::windows::overlay::bench` for the criterion benchmarks.
+# Exposes `jumpkey::windows::overlay::bench` for the criterion benchmarks.
 # Not part of the public API; off by default.
 bench = []
 
@@ -101,8 +101,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 # shortcut + PATH entry. See `docs/CODE_SIGNING.md` for the signing
 # step that runs after `cargo wix` in release builds.
 [package.metadata.wix]
-name = "Keyhop"
-manufacturer = "Richard Zampieri"
+name = "Jumpkey"
+manufacturer = "Graham Doerksen"
 # Skip the EULA dialog: Microsoft Store policy 10.2.9 only validates
 # `msiexec /qn` (silent), and an EULA would only ever block users who
 # *do* see the UI. The MIT license still ships as a sidecar file.

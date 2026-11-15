@@ -1,4 +1,4 @@
-//! `keyhop` — system-wide keyboard navigation overlay.
+//! `jumpkey` — system-wide keyboard navigation overlay.
 //!
 //! Two leader chords:
 //!
@@ -24,11 +24,11 @@
 use std::process::ExitCode;
 
 #[cfg(windows)]
-use keyhop::config::ScopeMode;
-use keyhop::{Action, Backend, Config, Element, HintEngine, HintOrder};
+use jumpkey::config::ScopeMode;
+use jumpkey::{Action, Backend, Config, Element, HintEngine, HintOrder};
 
 #[cfg(windows)]
-use keyhop::windows::{
+use jumpkey::windows::{
     config_watcher::{self, WM_USER_RELOAD_CONFIG},
     hotkey::{HotkeyAction, HotkeyConflict, Hotkeys},
     ipc, notification,
@@ -46,12 +46,12 @@ use keyhop::windows::{
 #[derive(Debug, Default, Clone, Copy)]
 struct Cli {
     no_tray: bool,
-    /// Ask any running keyhop in this user session to shut down cleanly,
+    /// Ask any running jumpkey in this user session to shut down cleanly,
     /// then exit. See [`ipc::send_close_signal`] for the wire-level
     /// mechanism. Mutually exclusive with the normal startup path —
     /// when set, we never even acquire the single-instance mutex.
     close: bool,
-    /// Delete the on-disk log files in `%LOCALAPPDATA%\keyhop\` and
+    /// Delete the on-disk log files in `%LOCALAPPDATA%\jumpkey\` and
     /// exit. Useful when triaging a recurring issue ("clear, repro,
     /// share log") or when the file has grown larger than the user
     /// is comfortable keeping around.
@@ -78,7 +78,7 @@ fn main() -> ExitCode {
     }
 
     init_tracing();
-    tracing::info!(version = env!("CARGO_PKG_VERSION"), "keyhop starting");
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "jumpkey starting");
 
     let result: anyhow::Result<()>;
     #[cfg(windows)]
@@ -96,7 +96,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!(error = ?e, "keyhop exited with error");
+            tracing::error!(error = ?e, "jumpkey exited with error");
             ExitCode::from(1)
         }
     }
@@ -111,15 +111,15 @@ fn parse_args() -> Result<Option<Cli>, ExitCode> {
                 return Ok(None);
             }
             "-V" | "--version" => {
-                println!("keyhop {}", env!("CARGO_PKG_VERSION"));
+                println!("jumpkey {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
             "--no-tray" => cli.no_tray = true,
             "--close" | "--quit" => cli.close = true,
             "--clear-logs" => cli.clear_logs = true,
             other => {
-                eprintln!("keyhop: unknown argument: {other}");
-                eprintln!("Try 'keyhop --help' for a list of options.");
+                eprintln!("jumpkey: unknown argument: {other}");
+                eprintln!("Try 'jumpkey --help' for a list of options.");
                 return Err(ExitCode::from(2));
             }
         }
@@ -129,18 +129,18 @@ fn parse_args() -> Result<Option<Cli>, ExitCode> {
 
 fn print_help() {
     println!(
-        "keyhop {} — system-wide keyboard navigation overlay",
+        "jumpkey {} — system-wide keyboard navigation overlay",
         env!("CARGO_PKG_VERSION")
     );
     println!();
     println!("USAGE:");
-    println!("    keyhop [FLAGS]");
+    println!("    jumpkey [FLAGS]");
     println!();
     println!("FLAGS:");
     println!("    -h, --help        Print help and exit");
     println!("    -V, --version     Print version and exit");
     println!("        --no-tray     Run without the system tray icon (hotkeys-only mode)");
-    println!("        --close       Cleanly shut down a running keyhop instance and exit");
+    println!("        --close       Cleanly shut down a running jumpkey instance and exit");
     println!("                      (alias: --quit)");
     println!("        --clear-logs  Delete the on-disk log files and exit");
     println!();
@@ -155,12 +155,12 @@ fn print_help() {
     println!("    Shift+<letter>    Right-click the element (context menu)");
     println!();
     println!("LOGS (release builds):");
-    println!("    Location:         %LOCALAPPDATA%\\keyhop\\keyhop.log[.YYYY-MM-DD]");
+    println!("    Location:         %LOCALAPPDATA%\\jumpkey\\jumpkey.log[.YYYY-MM-DD]");
     println!("    Rotation:         daily, keeping the 7 most recent files");
-    println!("    Manual purge:     keyhop --clear-logs");
+    println!("    Manual purge:     jumpkey --clear-logs");
     println!();
     println!("ENVIRONMENT:");
-    println!("    RUST_LOG          Tracing filter, e.g. `keyhop=debug` (default: info)");
+    println!("    RUST_LOG          Tracing filter, e.g. `jumpkey=debug` (default: info)");
     println!();
     println!("PROJECT:");
     println!("    Repository:       {}", env!("CARGO_PKG_REPOSITORY"));
@@ -178,7 +178,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     let _instance = match InstanceGuard::acquire()? {
         Some(guard) => guard,
         None => {
-            eprintln!("keyhop is already running in this session.");
+            eprintln!("jumpkey is already running in this session.");
             eprintln!("Use the existing tray icon, the `--close` flag, or quit it first.");
             // Exit successfully so launchers / autostart shims don't show
             // an error dialog when the user double-clicks twice.
@@ -199,7 +199,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
-    // Hidden IPC window so a future `keyhop --close` can find this
+    // Hidden IPC window so a future `jumpkey --close` can find this
     // process and ask it to shut down. Held alive until the message
     // loop exits; dropping it destroys the window.
     let _ipc_window = match ipc::create() {
@@ -219,7 +219,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     let element_style = HintStyle::elements_from_config(&config.colors.element);
     let window_style = HintStyle::windows_from_config(&config.colors.window);
 
-    let mut backend = keyhop::windows::WindowsBackend::with_config(
+    let mut backend = jumpkey::windows::WindowsBackend::with_config(
         config.performance.enable_caching,
         config.performance.cache_ttl_ms,
         config.scope.max_elements,
@@ -230,7 +230,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     // `Drop` unhooks `SetWinEventHook` on shutdown. Failure is
     // non-fatal: the synchronous hotkey path still works, just with
     // cold-cache UIA latency on each press.
-    let _prewarm = match keyhop::windows::prewarm::Prewarmer::start(
+    let _prewarm = match jumpkey::windows::prewarm::Prewarmer::start(
         backend.cache_handle(),
         config.scope.max_elements,
     ) {
@@ -251,7 +251,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         notify_hotkey_conflicts(&outcome.conflicts);
     }
 
-    // Hot-reload watcher. Best-effort: failure leaves keyhop fully
+    // Hot-reload watcher. Best-effort: failure leaves jumpkey fully
     // functional but missing the live-edit-`config.toml` convenience.
     // Held in a binding so its `Drop` only fires when `run_windows`
     // returns. The Settings dialog also triggers reload (without
@@ -282,7 +282,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
-    println!("keyhop {} is running.", env!("CARGO_PKG_VERSION"));
+    println!("jumpkey {} is running.", env!("CARGO_PKG_VERSION"));
     println!("  Pick element : {}", config.hotkeys.pick_element);
     println!("  Pick window  : {}", config.hotkeys.pick_window);
     println!("  Open settings: {}", config.hotkeys.open_settings);
@@ -291,18 +291,18 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     {
         if tray.is_some() {
             println!(
-                "  Quit         : Tray menu → Quit, `keyhop --close`, or Ctrl + C in this terminal"
+                "  Quit         : Tray menu → Quit, `jumpkey --close`, or Ctrl + C in this terminal"
             );
         } else {
-            println!("  Quit         : `keyhop --close`, or Ctrl + C in this terminal");
+            println!("  Quit         : `jumpkey --close`, or Ctrl + C in this terminal");
         }
     }
     #[cfg(not(debug_assertions))]
     {
         if tray.is_some() {
-            println!("  Quit         : Tray menu → Quit, or `keyhop --close`");
+            println!("  Quit         : Tray menu → Quit, or `jumpkey --close`");
         } else {
-            println!("  Quit         : `keyhop --close`");
+            println!("  Quit         : `jumpkey --close`");
         }
     }
     println!();
@@ -406,7 +406,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
                     if let Err(e) = dispatch_hotkey(action, &mut backend, &mut runtime, &config) {
                         tracing::error!(?action, error = ?e, "hotkey handler failed");
                         notification::error(
-                            "keyhop: action failed",
+                            "jumpkey: action failed",
                             &format!("{action:?} failed:\n{e}\n\nSee log for details."),
                         );
                     }
@@ -441,7 +441,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
                     {
                         if let Err(e) = open_log_file() {
                             tracing::error!(error = ?e, "failed to open log file");
-                            notification::error("keyhop: couldn't open log", &format!("{e}"));
+                            notification::error("jumpkey: couldn't open log", &format!("{e}"));
                         }
                     }
                     #[cfg(debug_assertions)]
@@ -511,7 +511,7 @@ fn apply_config(
     new_config: &Config,
     cached: &mut Config,
     runtime: &mut Runtime,
-    backend: &mut keyhop::windows::WindowsBackend,
+    backend: &mut jumpkey::windows::WindowsBackend,
     hotkeys: &mut Hotkeys,
     tray: Option<&mut Tray>,
     announce: bool,
@@ -552,7 +552,7 @@ fn apply_config(
         Err(e) => {
             tracing::error!(error = ?e, "re-registering hotkeys after reload failed");
             notification::error(
-                "keyhop: hotkey reload failed",
+                "jumpkey: hotkey reload failed",
                 &format!(
                     "{e}\n\nThe previous chords are no longer active. Open Settings to retry."
                 ),
@@ -592,7 +592,7 @@ fn notify_hotkey_conflicts(conflicts: &[HotkeyConflict]) {
         .collect::<Vec<_>>()
         .join("\n");
     notification::warn(
-        "keyhop: hotkey conflict",
+        "jumpkey: hotkey conflict",
         &format!(
             "Some hotkeys couldn't be registered:\n\n{body}\n\n\
             Open Settings to choose a different chord."
@@ -605,7 +605,7 @@ fn notify_hotkey_conflicts(conflicts: &[HotkeyConflict]) {
 /// the alphabet it saves reflect the layout they're actually using).
 #[cfg(windows)]
 fn open_settings(config: &Config) -> anyhow::Result<Option<Config>> {
-    keyhop::windows::keyboard_layout::capture_active_layout();
+    jumpkey::windows::keyboard_layout::capture_active_layout();
     settings_window::show(config)
 }
 
@@ -615,20 +615,20 @@ fn open_settings(config: &Config) -> anyhow::Result<Option<Config>> {
 #[cfg(windows)]
 ///
 /// Uses the most recently captured layout rather than re-reading the
-/// foreground window: this also runs after Settings → Save, when keyhop's
+/// foreground window: this also runs after Settings → Save, when jumpkey's
 /// own window is in front and Windows may report a stale layout. The
 /// hotkey path captures fresh first (see [`refresh_engine_for_layout`]).
 fn build_hint_engine(
-    hints: &keyhop::config::HintConfig,
-    keyboard: &keyhop::config::KeyboardConfig,
+    hints: &jumpkey::config::HintConfig,
+    keyboard: &jumpkey::config::KeyboardConfig,
 ) -> (HintEngine, isize) {
-    let layout_id = keyhop::windows::keyboard_layout::last_layout_id();
+    let layout_id = jumpkey::windows::keyboard_layout::last_layout_id();
     let detected = match keyboard.layout {
-        keyhop::LayoutChoice::Auto => keyhop::windows::keyboard_layout::detect(),
+        jumpkey::LayoutChoice::Auto => jumpkey::windows::keyboard_layout::detect(),
         _ => None,
     };
-    let layout = keyhop::Layout::resolve(keyboard.layout, detected);
-    let alphabet = keyhop::alphabet_presets::build_alphabet_for(hints, &layout, keyboard.geometry);
+    let layout = jumpkey::Layout::resolve(keyboard.layout, detected);
+    let alphabet = jumpkey::alphabet_presets::build_alphabet_for(hints, &layout, keyboard.geometry);
     tracing::debug!(%alphabet, "hint alphabet resolved");
     // Finger per alphabet character, via the key the user actually presses.
     let fingers = alphabet
@@ -650,8 +650,9 @@ fn build_hint_engine(
 /// switched layouts since it was built, so the labels stay typeable.
 #[cfg(windows)]
 fn refresh_engine_for_layout(runtime: &mut Runtime, config: &Config) {
-    let current = keyhop::windows::keyboard_layout::capture_active_layout();
-    if config.keyboard.layout != keyhop::LayoutChoice::Auto || current == runtime.engine_layout_id {
+    let current = jumpkey::windows::keyboard_layout::capture_active_layout();
+    if config.keyboard.layout != jumpkey::LayoutChoice::Auto || current == runtime.engine_layout_id
+    {
         return;
     }
     let (engine, id) = build_hint_engine(&config.hints, &config.keyboard);
@@ -663,7 +664,7 @@ fn refresh_engine_for_layout(runtime: &mut Runtime, config: &Config) {
 #[cfg(windows)]
 fn dispatch_hotkey(
     action: HotkeyAction,
-    backend: &mut keyhop::windows::WindowsBackend,
+    backend: &mut jumpkey::windows::WindowsBackend,
     runtime: &mut Runtime,
     config: &Config,
 ) -> anyhow::Result<()> {
@@ -677,7 +678,7 @@ fn dispatch_hotkey(
 
 #[cfg(windows)]
 fn handle_pick_element(
-    backend: &mut keyhop::windows::WindowsBackend,
+    backend: &mut jumpkey::windows::WindowsBackend,
     runtime: &Runtime,
 ) -> anyhow::Result<()> {
     let mut elements: Vec<Element> = backend.enumerate_by_scope(runtime.scope_mode)?;
@@ -690,9 +691,9 @@ fn handle_pick_element(
     // (window center / cursor). Sorting `elements` itself keeps
     // `elements[result.index]` below pointing at the right element.
     if let Some(anchor) =
-        keyhop::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &elements)
+        jumpkey::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &elements)
     {
-        keyhop::layout_order::sort_by_proximity(&mut elements, anchor);
+        jumpkey::layout_order::sort_by_proximity(&mut elements, anchor);
     }
 
     let labels = runtime.hint_engine.generate(elements.len());
@@ -741,7 +742,7 @@ fn handle_pick_window(runtime: &Runtime) -> anyhow::Result<()> {
     let windows = window_picker::enumerate_visible()?;
     if windows.is_empty() {
         tracing::info!("no visible top-level windows");
-        notification::info("keyhop", "No visible windows to pick from.");
+        notification::info("jumpkey", "No visible windows to pick from.");
         return Ok(());
     }
     tracing::info!(count = windows.len(), "showing window overlay");
@@ -781,7 +782,7 @@ fn init_tracing() {
             if fs::create_dir_all(&log_dir).is_ok() {
                 let appender = RollingFileAppender::builder()
                     .rotation(Rotation::DAILY)
-                    .filename_prefix("keyhop")
+                    .filename_prefix("jumpkey")
                     .filename_suffix("log")
                     .max_log_files(7)
                     .build(&log_dir);
@@ -802,7 +803,7 @@ fn init_tracing() {
     }
 }
 
-/// Directory holding all keyhop log files. Returns `None` when
+/// Directory holding all jumpkey log files. Returns `None` when
 /// `%LOCALAPPDATA%` is unset (very rare — typically only on heavily
 /// restricted service accounts).
 #[cfg(not(debug_assertions))]
@@ -810,12 +811,12 @@ fn get_log_dir() -> Option<std::path::PathBuf> {
     use std::env;
     let appdata = env::var("LOCALAPPDATA").ok()?;
     let mut path = std::path::PathBuf::from(appdata);
-    path.push("keyhop");
+    path.push("jumpkey");
     Some(path)
 }
 
 /// Path to the *most recent* log file. With daily rotation this is
-/// today's file, named `keyhop.YYYY-MM-DD.log`. We pick "newest by
+/// today's file, named `jumpkey.YYYY-MM-DD.log`. We pick "newest by
 /// mtime" rather than computing today's name explicitly so the lookup
 /// keeps working across timezone changes / clock skew / files written
 /// by an earlier process.
@@ -826,7 +827,7 @@ fn get_latest_log_file() -> Option<std::path::PathBuf> {
     let entries = fs::read_dir(&dir).ok()?;
     entries
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("keyhop"))
+        .filter(|e| e.file_name().to_string_lossy().starts_with("jumpkey"))
         .filter_map(|e| {
             let meta = e.metadata().ok()?;
             let modified = meta.modified().ok()?;
@@ -846,34 +847,34 @@ fn open_log_file() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Implementation of `keyhop --close`. Looks for the hidden IPC window
+/// Implementation of `jumpkey --close`. Looks for the hidden IPC window
 /// the running instance creates ([`ipc::create`]) and posts `WM_CLOSE`
 /// to it. The running instance's message loop turns that into a
 /// graceful shutdown — the same path the tray-menu "Quit" entry takes.
 ///
 /// Always exits the closer process with code 0 even when no instance
-/// was found, so wrapping `keyhop --close` in startup / cleanup
-/// scripts doesn't error out when keyhop wasn't running.
+/// was found, so wrapping `jumpkey --close` in startup / cleanup
+/// scripts doesn't error out when jumpkey wasn't running.
 #[cfg(windows)]
 fn run_close_command() -> ExitCode {
     match ipc::send_close_signal() {
         Ok(true) => {
-            println!("keyhop: shutdown signal sent.");
+            println!("jumpkey: shutdown signal sent.");
             ExitCode::SUCCESS
         }
         Ok(false) => {
-            println!("keyhop: no running instance found.");
+            println!("jumpkey: no running instance found.");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("keyhop: failed to signal running instance: {e}");
+            eprintln!("jumpkey: failed to signal running instance: {e}");
             ExitCode::from(1)
         }
     }
 }
 
-/// Implementation of `keyhop --clear-logs`. Removes every file under
-/// the log directory whose name starts with `keyhop` (today's file plus
+/// Implementation of `jumpkey --clear-logs`. Removes every file under
+/// the log directory whose name starts with `jumpkey` (today's file plus
 /// any rolled-over daily archives). Leaves the directory itself in
 /// place so the next run can write straight back to it without an
 /// extra `create_dir_all`.
@@ -885,24 +886,24 @@ fn run_close_command() -> ExitCode {
 fn run_clear_logs_command() -> ExitCode {
     #[cfg(debug_assertions)]
     {
-        eprintln!("keyhop: --clear-logs has nothing to do in debug builds (logs go to stderr).");
+        eprintln!("jumpkey: --clear-logs has nothing to do in debug builds (logs go to stderr).");
         ExitCode::SUCCESS
     }
     #[cfg(not(debug_assertions))]
     {
         use std::fs;
         let Some(dir) = get_log_dir() else {
-            eprintln!("keyhop: %LOCALAPPDATA% is not set; nothing to clear.");
+            eprintln!("jumpkey: %LOCALAPPDATA% is not set; nothing to clear.");
             return ExitCode::from(1);
         };
         if !dir.exists() {
-            println!("keyhop: log directory does not exist; nothing to clear.");
+            println!("jumpkey: log directory does not exist; nothing to clear.");
             return ExitCode::SUCCESS;
         }
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) => {
-                eprintln!("keyhop: cannot read log directory {}: {e}", dir.display());
+                eprintln!("jumpkey: cannot read log directory {}: {e}", dir.display());
                 return ExitCode::from(1);
             }
         };
@@ -910,29 +911,29 @@ fn run_clear_logs_command() -> ExitCode {
         let mut errors = 0usize;
         for entry in entries.flatten() {
             let name = entry.file_name();
-            if !name.to_string_lossy().starts_with("keyhop") {
+            if !name.to_string_lossy().starts_with("jumpkey") {
                 continue;
             }
             match fs::remove_file(entry.path()) {
                 Ok(()) => removed += 1,
                 Err(e) => {
-                    // Common case: the running keyhop has the current
+                    // Common case: the running jumpkey has the current
                     // file open with FILE_SHARE_READ but not _DELETE.
                     // Worth surfacing so the user knows to run --close
                     // first or shut down via the tray.
-                    eprintln!("keyhop: could not delete {}: {e}", entry.path().display());
+                    eprintln!("jumpkey: could not delete {}: {e}", entry.path().display());
                     errors += 1;
                 }
             }
         }
         println!(
-            "keyhop: removed {removed} log file(s) from {}.",
+            "jumpkey: removed {removed} log file(s) from {}.",
             dir.display()
         );
         if errors > 0 {
             eprintln!(
-                "keyhop: {errors} file(s) could not be deleted (is keyhop still running? \
-                Run `keyhop --close` first)."
+                "jumpkey: {errors} file(s) could not be deleted (is jumpkey still running? \
+                Run `jumpkey --close` first)."
             );
             return ExitCode::from(1);
         }

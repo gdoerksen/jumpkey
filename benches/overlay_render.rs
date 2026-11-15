@@ -9,8 +9,8 @@
 #[cfg(windows)]
 mod benches {
     use criterion::{black_box, BenchmarkId, Criterion};
-    use keyhop::windows::overlay::bench::{self, Prepared, Surface};
-    use keyhop::windows::overlay::{BadgeShape, Hint, HintStyle};
+    use jumpkey::windows::overlay::bench::{self, Prepared, Surface};
+    use jumpkey::windows::overlay::{BadgeShape, Hint, HintStyle};
 
     const COUNTS: [usize; 3] = [50, 300, 800];
 

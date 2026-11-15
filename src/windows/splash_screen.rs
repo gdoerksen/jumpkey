@@ -1,6 +1,6 @@
 //! Splash screen for app initialization.
 //!
-//! Displays the keyhop logo in a borderless, centered window while the
+//! Displays the jumpkey logo in a borderless, centered window while the
 //! application initializes. The window is automatically closed when
 //! [`SplashScreen`] is dropped.
 
@@ -50,7 +50,7 @@ pub struct SplashScreen {
 unsafe impl Send for SplashScreen {}
 
 impl SplashScreen {
-    /// Create and show a centered splash screen with the keyhop logo.
+    /// Create and show a centered splash screen with the jumpkey logo.
     /// The window is borderless, always-on-top, and sized to 400×400.
     pub fn show() -> Result<Self> {
         let image_data = include_bytes!("../../branding/store-logo-1080.png");
@@ -61,7 +61,7 @@ impl SplashScreen {
 
             // Register window class (idempotent — the second registration
             // will fail silently and that's fine).
-            let class_name = w!("KeyhopSplashClass");
+            let class_name = w!("JumpkeySplashClass");
             let wc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                 style: CS_HREDRAW | CS_VREDRAW,
@@ -86,7 +86,7 @@ impl SplashScreen {
             let hwnd = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
                 class_name,
-                w!("Keyhop"),
+                w!("Jumpkey"),
                 WS_POPUP,
                 x,
                 y,

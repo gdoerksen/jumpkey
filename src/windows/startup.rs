@@ -7,7 +7,7 @@
 //! - Uninstalling/removing the binary won't leave orphaned `HKLM` entries.
 //! - The setting follows the user across machines if they roam profiles.
 //!
-//! The value name is hardcoded to `keyhop` so we don't have to guess at
+//! The value name is hardcoded to `jumpkey` so we don't have to guess at
 //! enable/disable time. The value data is the absolute path to the
 //! currently-running executable, captured via [`std::env::current_exe`].
 
@@ -20,9 +20,9 @@ use windows::Win32::System::Registry::{
 };
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const VALUE_NAME: &str = "keyhop";
+const VALUE_NAME: &str = "jumpkey";
 
-/// Whether keyhop is currently registered to launch with Windows. Returns
+/// Whether jumpkey is currently registered to launch with Windows. Returns
 /// `Ok(false)` when the value is missing (the common state); `Err` only on
 /// genuine registry failures (corruption, ACL surprises) since users may
 /// poll this on UI open and we don't want a benign "missing" to look like
@@ -65,7 +65,7 @@ pub fn is_enabled() -> Result<bool> {
 
 /// Enable or disable Windows startup integration for the current user.
 ///
-/// On enable: writes `HKCU\...\Run\keyhop = "<absolute exe path>"`.
+/// On enable: writes `HKCU\...\Run\jumpkey = "<absolute exe path>"`.
 /// On disable: deletes the value (idempotent — removing a missing value
 /// is treated as success so the Settings window can call this
 /// unconditionally on save).
