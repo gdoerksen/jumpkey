@@ -19,3 +19,6 @@ Thumbs.db
 *.tmp
 .relnotes.tmp
 .commitmsg.tmp
+
+# Claude Code personal settings
+.claude/settings.local.json
