@@ -280,8 +280,8 @@ pub enum ScopeMode {
     /// Only the foreground window (legacy behaviour).
     #[default]
     ActiveWindow,
-    /// All visible top-level windows on the monitor that currently
-    /// contains the cursor.
+    /// All visible top-level windows on the focused window's monitor
+    /// (the cursor's monitor when the desktop has focus).
     ActiveMonitor,
     /// All visible top-level windows across every monitor.
     AllWindows,
