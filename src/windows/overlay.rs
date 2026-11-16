@@ -14,19 +14,23 @@
 //! primitive completely free of knowledge about the domain it's pointing
 //! at.
 //!
-//! Layout pass: the renderer estimates each badge's pixel size up-front
-//! (no measure-then-place dance) and runs a small collision-resolution
-//! pass that stacks colliding hints vertically. This is what keeps two
-//! maximized windows on the same monitor (e.g. Edge + Steam) from drawing
-//! their badges on top of each other.
+//! Layout pass: the renderer sizes each badge up-front from the measured
+//! advance of the (monospaced) label font, with no measure-then-place
+//! dance, and runs a small collision-resolution pass that stacks
+//! colliding hints vertically. This is what keeps two maximized windows
+//! on the same monitor (e.g. Edge + Steam) from drawing their badges on
+//! top of each other.
 //!
 //! Transparency is implemented with the modern, fast path:
 //! `UpdateLayeredWindow(ULW_ALPHA)` driven by a pre-composed 32-bit ARGB
 //! DIB. Pixels with `alpha == 0` are fully transparent (no color-key
 //! tax, no per-paint magenta fill); badge pixels carry per-pixel alpha
-//! that DWM blends directly. The HWND, off-screen DIB, and memory DC
-//! are all created once on the first hotkey press and reused for the
-//! life of the process — subsequent picks just re-render and re-show.
+//! that DWM blends directly. Opacity is baked into those pixels: badge
+//! fills, borders and leaders are translucent, while label glyphs
+//! (rasterised once per pick by [`super::label_text`]) stay opaque.
+//! The HWND, off-screen DIB, and memory DC are all created once on the
+//! first hotkey press and reused for the life of the process —
+//! subsequent picks just re-render and re-show.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -38,13 +42,10 @@ use smallvec::SmallVec;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject,
-    DrawTextW, FillRect, GetDC, GetMonitorInfoW, MonitorFromRect, ReleaseDC, SelectObject,
-    SetBkMode, SetTextColor, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_PITCH,
-    DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_TOP,
-    DT_VCENTER, FF_DONTCARE, FW_BOLD, FW_NORMAL, HBITMAP, HDC, HFONT, HGDIOBJ, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, OUT_DEFAULT_PRECIS, TRANSPARENT,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
+    MonitorFromRect, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
@@ -65,6 +66,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
+use super::label_text::{Coverage, Font, LabelText, Role, TextItem};
 use crate::Bounds;
 
 const CLASS_NAME: PCWSTR = w!("JumpkeyOverlayClass");
@@ -75,7 +77,7 @@ const WINDOW_TITLE: PCWSTR = w!("Jumpkey Overlay");
 const PILL_GAP: i32 = 4;
 
 /// Hard cap on how many characters we lay out for the extra text. Past
-/// this, `DT_END_ELLIPSIS` truncates visually. Keeps very long window
+/// this, the title is trimmed with an ellipsis. Keeps very long window
 /// titles from making one badge wider than a monitor.
 const MAX_EXTRA_CHARS: usize = 50;
 
@@ -648,8 +650,9 @@ struct OverlayState {
     /// Esc pressed, or focus lost). Replaces the old DestroyWindow +
     /// PostQuitMessage flow now that the HWND is persistent.
     done: bool,
-    label_font: HFONT,
-    extra_font: HFONT,
+    /// Rasterised label (and extra-pill title) text, parallel to `laid`.
+    /// Built once at pick start; frames just composite the masks.
+    text: Vec<HintText>,
     /// Callout dimensions, `Some` when `style.shape` is `Callout`.
     callout_geom: Option<CalloutGeom>,
     /// Pre-rendered callout bodies (shape + gradient + border + shadow),
@@ -658,14 +661,36 @@ struct OverlayState {
     sprites: HashMap<SpriteKey, Sprite>,
 }
 
+/// Glyph coverage for one hint, with where each mask goes in the DIB.
+#[derive(Default)]
+struct HintText {
+    label: Coverage,
+    label_at: (i32, i32),
+    extra: Option<(Coverage, (i32, i32))>,
+}
+
+/// Shrink `r` by `dx` on the left/right and `dy` on the top/bottom.
+fn inset(r: &RECT, dx: i32, dy: i32) -> RECT {
+    RECT {
+        left: r.left + dx,
+        top: r.top + dy,
+        right: r.right - dx,
+        bottom: r.bottom - dy,
+    }
+}
+
 impl OverlayState {
-    unsafe fn new(hints: Vec<Hint>, style: HintStyle, origin_x: i32, origin_y: i32) -> Self {
-        let label_font = create_font(style.font_height, FW_BOLD.0 as i32);
-        // The extra pill renders at ~75% of the label height in regular
-        // weight — visible but clearly secondary to the matchable badge.
-        let extra_font = create_font((style.font_height * 3) / 4, FW_NORMAL.0 as i32);
-        let laid = lay_out(&hints, &style, origin_x, origin_y);
+    unsafe fn new(
+        hints: Vec<Hint>,
+        style: HintStyle,
+        origin_x: i32,
+        origin_y: i32,
+        text: &mut LabelText,
+    ) -> Self {
+        let metrics = TextMetrics::measure(&style, text);
+        let laid = lay_out(&hints, &style, metrics, origin_x, origin_y);
         let callout_geom = style.callout_geom_if_enabled();
+        let text = Self::rasterize_text(&laid, &style, callout_geom, text);
         let mut sprites = HashMap::new();
         if let Some(g) = callout_geom {
             for h in laid.iter().filter(|h| h.callout) {
@@ -677,6 +702,7 @@ impl OverlayState {
                         h.tail,
                         style.badge_bg,
                         style.border,
+                        style.badge_opacity,
                     )
                 });
             }
@@ -688,11 +714,81 @@ impl OverlayState {
             selected: None,
             modifier: PickModifier::None,
             done: false,
-            label_font,
-            extra_font,
+            text,
             callout_geom,
             sprites,
         }
+    }
+
+    /// Box the label text is centred in: inside the padding for rect
+    /// badges, clear of the rounded corners and border for callouts.
+    fn label_rect(style: &HintStyle, geom: Option<CalloutGeom>, laid: &LaidHint) -> RECT {
+        match (geom, laid.callout) {
+            (Some(g), true) => inset(&laid.badge_rect, g.radius, 1),
+            _ => inset(&laid.badge_rect, style.padding_x, style.padding_y),
+        }
+    }
+
+    /// Rasterise every hint's text in one pass.
+    fn rasterize_text(
+        laid: &[LaidHint],
+        style: &HintStyle,
+        geom: Option<CalloutGeom>,
+        text: &mut LabelText,
+    ) -> Vec<HintText> {
+        let mut items = Vec::with_capacity(laid.len());
+        let mut at = Vec::with_capacity(laid.len());
+        fn item<'a>(text: &'a str, font: Font, r: &RECT) -> TextItem<'a> {
+            TextItem {
+                text,
+                font,
+                w: r.right - r.left,
+                h: r.bottom - r.top,
+            }
+        }
+        for h in laid {
+            let r = Self::label_rect(style, geom, h);
+            items.push(item(&h.label, label_font(style), &r));
+            at.push((r.left, r.top));
+            if let (Some(er), Some(extra)) = (&h.extra_rect, &h.extra) {
+                let r = inset(er, style.padding_x, style.padding_y);
+                items.push(item(extra, extra_font(style), &r));
+                at.push((r.left, r.top));
+            }
+        }
+        let mut masks = text.rasterize(&items).into_iter().zip(at);
+        laid.iter()
+            .map(|h| {
+                let (label, label_at) = masks.next().expect("one mask per label");
+                let extra = h
+                    .extra_rect
+                    .and(h.extra.as_ref())
+                    .map(|_| masks.next().expect("one mask per title"));
+                HintText {
+                    label,
+                    label_at,
+                    extra,
+                }
+            })
+            .collect()
+    }
+
+    /// Composite a text mask in `color`, with the optional 1px shadow.
+    unsafe fn draw_text_mask(
+        &self,
+        bits: *mut u8,
+        dib_w: i32,
+        dib_h: i32,
+        cov: &Coverage,
+        (x, y): (i32, i32),
+        color: COLORREF,
+    ) {
+        if self.style.text_shadow {
+            // Dark grey rather than black so it reads as depth, not as a
+            // second character.
+            blit_coverage(bits, dib_w, dib_h, cov, x + 1, y + 1, COLORREF(0x00404040));
+        }
+        blit_coverage(bits, dib_w, dib_h, cov, x, y, color);
     }
 
     /// Render the current state into the supplied off-screen ARGB DIB,
@@ -705,7 +801,6 @@ impl OverlayState {
         bits: *mut u8,
         width: i32,
         height: i32,
-        opacity: u8,
     ) {
         // Reset the DIB to fully transparent. memset on a contiguous
         // BGRA buffer is cheaper than per-pixel iteration and matches
@@ -714,16 +809,15 @@ impl OverlayState {
             std::ptr::write_bytes(bits, 0, (width as usize) * (height as usize) * 4);
         }
 
-        self.draw_all(mem_dc, bits, width, height);
+        self.draw_all(bits, width, height);
 
-        // Hand the finished frame to DWM. SourceConstantAlpha applies
-        // the per-window opacity over the per-pixel alpha — same visual
-        // result as the old LWA_ALPHA + LWA_COLORKEY combo, but with
-        // proper anti-aliased edges around every drawn pixel.
+        // Hand the finished frame to DWM. Opacity is already baked into
+        // each pixel (badge fills, borders and leaders are translucent,
+        // glyphs are not), so the window itself is composited unfaded.
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
-            SourceConstantAlpha: opacity,
+            SourceConstantAlpha: 255,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
         let size = windows::Win32::Foundation::SIZE {
@@ -747,14 +841,20 @@ impl OverlayState {
     /// Draw every visible hint into an already-cleared DIB. Split out of
     /// [`Self::render_to_dib`] so the benchmarks can time our drawing
     /// without the full-surface clear or the DWM hand-off.
-    unsafe fn draw_all(&self, mem_dc: HDC, bits: *mut u8, width: i32, height: i32) {
-        let _ = SetBkMode(mem_dc, TRANSPARENT);
-        for laid in &self.laid {
-            self.draw_hint(mem_dc, bits, width, height, laid);
+    unsafe fn draw_all(&self, bits: *mut u8, width: i32, height: i32) {
+        for (laid, text) in self.laid.iter().zip(&self.text) {
+            self.draw_hint(bits, width, height, laid, text);
         }
     }
 
-    unsafe fn draw_hint(&self, hdc: HDC, bits: *mut u8, dib_w: i32, dib_h: i32, laid: &LaidHint) {
+    unsafe fn draw_hint(
+        &self,
+        bits: *mut u8,
+        dib_w: i32,
+        dib_h: i32,
+        laid: &LaidHint,
+        text: &HintText,
+    ) {
         // Hide hints whose label doesn't match the typed prefix.
         if !self.typed.is_empty() && !laid.label.starts_with(&self.typed) {
             return;
@@ -763,153 +863,75 @@ impl OverlayState {
         // -- leader outline + connector arrow (drawn first so the badge
         //    paints on top) --
         //
-        // These go straight into the DIB byte buffer because GDI's
-        // line/frame/polygon operations leave the alpha channel at 0,
-        // which would make them invisible after UpdateLayeredWindow.
         // A callout's tail already points at its element, so the outline
         // and connector are only for tail-less badges.
         if self.style.show_leader && laid.tail.is_none() {
             self.draw_leader_dib(bits, dib_w, dib_h, laid);
         }
 
-        if let (Some(g), true) = (self.callout_geom, laid.callout) {
+        if let (Some(_), true) = (self.callout_geom, laid.callout) {
             if let Some(sprite) = self.sprites.get(&SpriteKey::for_hint(laid)) {
-                self.draw_callout(hdc, bits, dib_w, dib_h, laid, sprite, g);
+                let body = &laid.badge_rect;
+                blit_sprite(
+                    bits,
+                    dib_w,
+                    dib_h,
+                    sprite,
+                    body.left - sprite.body_x,
+                    body.top - sprite.body_y,
+                );
+                self.draw_text_mask(
+                    bits,
+                    dib_w,
+                    dib_h,
+                    &text.label,
+                    text.label_at,
+                    self.style.badge_fg,
+                );
                 return;
             }
         }
 
         // -- matchable badge --
         //
-        // FillRect writes BGR but zeros the alpha channel; we patch
-        // alpha=255 over the entire badge_rect *after* drawing the text
-        // so glyph pixels (also alpha=0 from DrawText) inherit the
-        // patched alpha. Net result: every pixel inside badge_rect
-        // becomes fully opaque ARGB while pixels outside stay invisible.
-        let bg = CreateSolidBrush(self.style.badge_bg);
-        FillRect(hdc, &laid.badge_rect, bg);
-        let _ = DeleteObject(HGDIOBJ(bg.0));
-
-        let old = SelectObject(hdc, HGDIOBJ(self.label_font.0));
-        let mut wide: Vec<u16> = laid.label.encode_utf16().collect();
-        let text_rect = RECT {
-            left: laid.badge_rect.left + self.style.padding_x,
-            top: laid.badge_rect.top + self.style.padding_y,
-            right: laid.badge_rect.right - self.style.padding_x,
-            bottom: laid.badge_rect.bottom - self.style.padding_y,
-        };
-        if self.style.text_shadow {
-            // 1px down-right shadow under the glyph. Drawn dark-grey rather
-            // than pure black so it reads as depth, not as a second character.
-            let mut shadow_rect = RECT {
-                left: text_rect.left + 1,
-                top: text_rect.top + 1,
-                right: text_rect.right + 1,
-                bottom: text_rect.bottom + 1,
-            };
-            let _ = SetTextColor(hdc, COLORREF(0x00404040));
-            DrawTextW(
-                hdc,
-                &mut wide,
-                &mut shadow_rect,
-                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
-            );
-        }
-        let _ = SetTextColor(hdc, self.style.badge_fg);
-        let mut text_rect_mut = text_rect;
-        DrawTextW(
-            hdc,
-            &mut wide,
-            &mut text_rect_mut,
-            DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX,
-        );
-        let _ = SelectObject(hdc, old);
-
-        // Now that all GDI pixels for this badge are written, lift the
-        // entire badge rect to alpha=255 in a single sweep.
-        set_alpha_in_rect(bits, dib_w, dib_h, &laid.badge_rect, 255);
-        // Border: 1px frame in the configured border color, written
-        // directly into the DIB so it's already alpha=255.
-        frame_rect_argb(bits, dib_w, dib_h, &laid.badge_rect, self.style.border);
-
-        // -- optional extra pill --
-        if let (Some(extra_rect), Some(extra)) = (&laid.extra_rect, &laid.extra) {
-            let bg = CreateSolidBrush(self.style.extra_bg);
-            FillRect(hdc, extra_rect, bg);
-            let _ = DeleteObject(HGDIOBJ(bg.0));
-
-            let old = SelectObject(hdc, HGDIOBJ(self.extra_font.0));
-            let _ = SetTextColor(hdc, self.style.extra_fg);
-            let mut wide_extra: Vec<u16> = extra.encode_utf16().collect();
-            let mut extra_text_rect = RECT {
-                left: extra_rect.left + self.style.padding_x,
-                top: extra_rect.top + self.style.padding_y,
-                right: extra_rect.right - self.style.padding_x,
-                bottom: extra_rect.bottom - self.style.padding_y,
-            };
-            DrawTextW(
-                hdc,
-                &mut wide_extra,
-                &mut extra_text_rect,
-                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS,
-            );
-            let _ = SelectObject(hdc, old);
-
-            set_alpha_in_rect(bits, dib_w, dib_h, extra_rect, 255);
-            frame_rect_argb(bits, dib_w, dib_h, extra_rect, self.style.border);
-        }
-    }
-
-    /// Blit the cached callout sprite, then draw the label centred in
-    /// the body. GDI zeroes alpha on glyph pixels, so alpha is restored
-    /// over the text rect afterwards. That rect is kept clear of the
-    /// rounded corners and the border, so every pixel in it is opaque
-    /// body fill and lifting it to 255 is exact.
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn draw_callout(
-        &self,
-        hdc: HDC,
-        bits: *mut u8,
-        dib_w: i32,
-        dib_h: i32,
-        laid: &LaidHint,
-        sprite: &Sprite,
-        g: CalloutGeom,
-    ) {
-        let body = &laid.badge_rect;
-        blit_sprite(
+        // Fill and border carry the badge opacity; the label goes on top
+        // at full opacity so it stays crisp on a see-through badge.
+        let a = self.style.badge_opacity;
+        fill_rect_argb(
             bits,
             dib_w,
             dib_h,
-            sprite,
-            body.left - sprite.body_x,
-            body.top - sprite.body_y,
+            &laid.badge_rect,
+            premul(self.style.badge_bg, a),
+        );
+        frame_rect_argb(
+            bits,
+            dib_w,
+            dib_h,
+            &laid.badge_rect,
+            premul(self.style.border, a),
+        );
+        self.draw_text_mask(
+            bits,
+            dib_w,
+            dib_h,
+            &text.label,
+            text.label_at,
+            self.style.badge_fg,
         );
 
-        let text_rect = RECT {
-            left: body.left + g.radius,
-            top: body.top + 1,
-            right: body.right - g.radius,
-            bottom: body.bottom - 1,
-        };
-        let flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX;
-        let old = SelectObject(hdc, HGDIOBJ(self.label_font.0));
-        let mut wide: Vec<u16> = laid.label.encode_utf16().collect();
-        if self.style.text_shadow {
-            let mut shadow_rect = RECT {
-                left: text_rect.left + 1,
-                top: text_rect.top + 1,
-                right: text_rect.right + 1,
-                bottom: text_rect.bottom + 1,
-            };
-            let _ = SetTextColor(hdc, COLORREF(0x00404040));
-            DrawTextW(hdc, &mut wide, &mut shadow_rect, flags);
+        // -- optional extra pill --
+        if let (Some(extra_rect), Some((cov, at))) = (&laid.extra_rect, &text.extra) {
+            fill_rect_argb(
+                bits,
+                dib_w,
+                dib_h,
+                extra_rect,
+                premul(self.style.extra_bg, a),
+            );
+            frame_rect_argb(bits, dib_w, dib_h, extra_rect, premul(self.style.border, a));
+            self.draw_text_mask(bits, dib_w, dib_h, cov, *at, self.style.extra_fg);
         }
-        let _ = SetTextColor(hdc, self.style.badge_fg);
-        let mut rect = text_rect;
-        DrawTextW(hdc, &mut wide, &mut rect, flags);
-        let _ = SelectObject(hdc, old);
-        set_alpha_in_rect(bits, dib_w, dib_h, &text_rect, 255);
     }
 
     /// Visually associate the badge with its click target.
@@ -935,12 +957,13 @@ impl OverlayState {
         // Outline the target rect in the badge background color so the
         // badge↔target association is immediate (yellow badge = yellow
         // box around its element). Drawn directly into the DIB so it's
-        // already alpha=255 — GDI's FrameRect would have left alpha=0.
+        // at the badge opacity, like the badge itself.
         // Callouts never outline their target: they point with their
         // tail, and a tail-less fallback callout gets just the connector
         // below. Rect badges (incl. extra-pill hints in callout mode) do.
         if !laid.callout {
-            frame_rect_argb(bits, dib_w, dib_h, target, self.style.badge_bg);
+            let c = premul(self.style.badge_bg, self.style.badge_opacity);
+            frame_rect_argb(bits, dib_w, dib_h, target, c);
         }
 
         // Connector arrow only when the badge is meaningfully detached
@@ -959,18 +982,10 @@ impl OverlayState {
             // Anything shorter than ~6px reads as a stray pixel rather
             // than an arrow — skip the connector but keep the outline.
             if len_sq >= 36 {
-                draw_line_argb(
-                    bits,
-                    dib_w,
-                    dib_h,
-                    start.x,
-                    start.y,
-                    end.x,
-                    end.y,
-                    self.style.leader_color,
-                );
+                let c = premul(self.style.leader_color, self.style.badge_opacity);
+                draw_line_argb(bits, dib_w, dib_h, start.x, start.y, end.x, end.y, c);
                 let head = arrowhead_polygon(start, end);
-                fill_triangle_argb(bits, dib_w, dib_h, &head, self.style.leader_color);
+                fill_triangle_argb(bits, dib_w, dib_h, &head, c);
             }
         }
     }
@@ -1050,43 +1065,6 @@ fn current_modifier() -> PickModifier {
             PickModifier::None
         }
     }
-}
-
-impl Drop for OverlayState {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = DeleteObject(HGDIOBJ(self.label_font.0));
-            let _ = DeleteObject(HGDIOBJ(self.extra_font.0));
-        }
-    }
-}
-
-unsafe fn create_font(height: i32, weight: i32) -> HFONT {
-    // Consolas is a clean monospace font shipped with every supported
-    // Windows version. Critically for the hint overlay it draws lower-case
-    // `l` and capital `I` distinctly (the Segoe UI default we used through
-    // v0.3.0 made the two collapse on small badges, which is one of the
-    // top "I typed the wrong letter" complaints in issue #4).
-    //
-    // CreateFontW silently substitutes the closest available face if
-    // Consolas is missing, so the explicit name is safe even on heavily
-    // customised installs where shell fonts have been replaced.
-    CreateFontW(
-        height,
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        DEFAULT_CHARSET.0.into(),
-        OUT_DEFAULT_PRECIS.0.into(),
-        CLIP_DEFAULT_PRECIS.0.into(),
-        CLEARTYPE_QUALITY.0.into(),
-        u32::from(DEFAULT_PITCH.0 | (FF_DONTCARE.0 << 4)),
-        w!("Consolas"),
-    )
 }
 
 /// Anchor strategy for placing a badge relative to its target element.
@@ -1275,9 +1253,85 @@ fn rect_inside_monitor(rect: &RECT, monitor: &RECT) -> bool {
 /// glyph is roughly 0.62 × font height; for the regular extra-pill text
 /// it's around 0.50. Generous enough to avoid clipping; close enough that
 /// the layout feels tight.
-fn lay_out(hints: &[Hint], style: &HintStyle, origin_x: i32, origin_y: i32) -> Vec<LaidHint> {
-    let label_glyph_w = ((style.font_height as f32) * 0.62) as i32;
-    let extra_glyph_w = ((style.font_height as f32) * 0.50) as i32;
+/// Font for a style's matchable labels.
+fn label_font(style: &HintStyle) -> Font {
+    Font {
+        px: style.font_height,
+        role: Role::Label,
+    }
+}
+
+/// Font for a style's extra (window title) pill: ~75% of the label
+/// height in regular weight, visible but clearly secondary.
+fn extra_font(style: &HintStyle) -> Font {
+    Font {
+        px: (style.font_height * 3) / 4,
+        role: Role::Title,
+    }
+}
+
+/// Per-character advance widths (px) used to size badges. The overlay
+/// font is monospaced, so a label is `chars × advance` wide.
+#[derive(Debug, Clone, Copy)]
+struct TextMetrics {
+    label_advance: f32,
+    extra_advance: f32,
+}
+
+impl TextMetrics {
+    /// Advances measured from the font the labels are drawn with, so
+    /// badge widths match the drawn text.
+    fn measure(style: &HintStyle, text: &mut LabelText) -> Self {
+        Self {
+            label_advance: text.advance(label_font(style)),
+            extra_advance: text.advance(extra_font(style)),
+        }
+    }
+
+    /// Font-free estimate (the ratios layout used before text was
+    /// measured). Keeps layout tests independent of installed fonts.
+    #[cfg(any(test, feature = "bench"))]
+    fn estimate(style: &HintStyle) -> Self {
+        let fh = style.font_height as f32;
+        Self {
+            label_advance: ((fh * 0.62) as i32) as f32,
+            extra_advance: ((fh * 0.50) as i32) as f32,
+        }
+    }
+
+    fn label_w(&self, chars: usize) -> i32 {
+        (chars as f32 * self.label_advance).ceil() as i32
+    }
+
+    fn extra_w(&self, chars: usize) -> i32 {
+        (chars as f32 * self.extra_advance).ceil() as i32
+    }
+}
+
+/// [`lay_out`] with [`TextMetrics::estimate`], for tests and benches.
+#[cfg(any(test, feature = "bench"))]
+fn lay_out_estimated(
+    hints: &[Hint],
+    style: &HintStyle,
+    origin_x: i32,
+    origin_y: i32,
+) -> Vec<LaidHint> {
+    lay_out(
+        hints,
+        style,
+        TextMetrics::estimate(style),
+        origin_x,
+        origin_y,
+    )
+}
+
+fn lay_out(
+    hints: &[Hint],
+    style: &HintStyle,
+    metrics: TextMetrics,
+    origin_x: i32,
+    origin_y: i32,
+) -> Vec<LaidHint> {
     let row_h = style.font_height + style.padding_y * 2;
 
     // Process hints in reading order (top-then-left) so collision
@@ -1300,15 +1354,15 @@ fn lay_out(hints: &[Hint], style: &HintStyle, origin_x: i32, origin_y: i32) -> V
         let h = &hints[i];
         let callout = callout_geom.filter(|_| h.extra.is_none());
 
-        let label_chars = h.label.chars().count() as i32;
+        let label_w = metrics.label_w(h.label.chars().count());
         let (badge_w, row_h) = match callout {
-            Some(g) => (g.body_width(label_chars * label_glyph_w), g.body_h),
-            None => (label_chars * label_glyph_w + style.padding_x * 2, row_h),
+            Some(g) => (g.body_width(label_w), g.body_h),
+            None => (label_w + style.padding_x * 2, row_h),
         };
 
         let extra_w = h.extra.as_ref().map(|s| {
-            let chars = s.chars().count().min(MAX_EXTRA_CHARS) as i32;
-            chars * extra_glyph_w + style.padding_x * 2
+            let chars = s.chars().count().min(MAX_EXTRA_CHARS);
+            metrics.extra_w(chars) + style.padding_x * 2
         });
 
         let total_w = badge_w + extra_w.map(|w| PILL_GAP + w).unwrap_or(0);
@@ -1827,6 +1881,9 @@ struct PersistentOverlay {
     height: i32,
     origin_x: i32,
     origin_y: i32,
+    /// Label rasteriser and font cache, kept across picks so fonts are
+    /// set up once per size rather than on every hotkey press.
+    text: LabelText,
 }
 
 impl PersistentOverlay {
@@ -1871,6 +1928,7 @@ impl PersistentOverlay {
             height: vh,
             origin_x: vx,
             origin_y: vy,
+            text: LabelText::new(),
         })
     }
 
@@ -1936,8 +1994,7 @@ impl PersistentOverlay {
             }
         }
 
-        let opacity = style.badge_opacity;
-        let mut state = OverlayState::new(hints, style, vx, vy);
+        let mut state = OverlayState::new(hints, style, vx, vy, &mut self.text);
 
         // Bind the state pointer to the persistent HWND so wnd_proc can
         // route key events into it. We clear the pointer before
@@ -1953,14 +2010,7 @@ impl PersistentOverlay {
         // the previously focused app visually unchanged underneath the
         // overlay; we still SetForegroundWindow + SetFocus so key
         // events route to us.
-        state.render_to_dib(
-            self.hwnd,
-            self.mem_dc,
-            self.bits,
-            self.width,
-            self.height,
-            opacity,
-        );
+        state.render_to_dib(self.hwnd, self.mem_dc, self.bits, self.width, self.height);
         let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
         let _ = SetForegroundWindow(self.hwnd);
         let _ = SetFocus(self.hwnd);
@@ -1994,14 +2044,7 @@ impl PersistentOverlay {
                 break;
             }
             if state.typed.len() != last_typed_len {
-                state.render_to_dib(
-                    self.hwnd,
-                    self.mem_dc,
-                    self.bits,
-                    self.width,
-                    self.height,
-                    opacity,
-                );
+                state.render_to_dib(self.hwnd, self.mem_dc, self.bits, self.width, self.height);
                 last_typed_len = state.typed.len();
             }
         }
@@ -2087,61 +2130,36 @@ unsafe fn create_dib_surface(width: i32, height: i32) -> Result<(HDC, HBITMAP, *
 
 // -- Direct ARGB rasterization helpers --------------------------------
 //
-// GDI on a 32-bit DIB writes BGR but leaves the alpha byte at 0, so
-// anything we want visible after UpdateLayeredWindow either has to be
-// patched up post-hoc (`set_alpha_in_rect`) or written directly to the
-// pixel buffer with the right ARGB tuple (`*_argb` helpers below).
+// Everything visible after UpdateLayeredWindow is written straight into
+// the DIB as premultiplied BGRA (GDI drawing would leave alpha at 0).
+// Colours are converted once with [`premul`], which also bakes in the
+// badge opacity.
 //
 // All of these treat `bits` as a top-down BGRA buffer of `dib_w * dib_h`
 // pixels and silently clip writes that fall outside the buffer.
 
-/// Lift the alpha byte to `alpha` for every pixel in `rect ∩ dib`.
-/// Used after a FillRect/DrawText sequence so the just-drawn region
-/// becomes opaque in one sweep.
-unsafe fn set_alpha_in_rect(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, alpha: u8) {
-    if bits.is_null() {
-        return;
-    }
-    let x0 = rect.left.max(0);
-    let y0 = rect.top.max(0);
-    let x1 = rect.right.min(dib_w);
-    let y1 = rect.bottom.min(dib_h);
-    if x0 >= x1 || y0 >= y1 {
-        return;
-    }
-    let stride = (dib_w as usize) * 4;
-    for y in y0..y1 {
-        let row = bits.add((y as usize) * stride);
-        // We could SIMD this but the badge rects are tiny (≤200 px
-        // wide × ~30 px tall) — the scalar loop fits in L1 trivially.
-        let mut p = row.add((x0 as usize) * 4 + 3);
-        for _ in x0..x1 {
-            *p = alpha;
-            p = p.add(4);
-        }
-    }
+/// `color` at opacity `alpha`, premultiplied, in DIB byte order
+/// `[b, g, r, a]` (`COLORREF` is `0x00BBGGRR`, red in the low byte).
+fn premul(color: COLORREF, alpha: u8) -> [u8; 4] {
+    let c = color.0;
+    let ch = |shift: u32| (((c >> shift) & 0xFF) * alpha as u32 + 127) / 255;
+    [ch(16) as u8, ch(8) as u8, ch(0) as u8, alpha]
 }
 
-/// Write a single fully-opaque pixel at `(x, y)` in `color` (BGR).
+/// Write one premultiplied pixel at `(x, y)`.
 #[inline]
-unsafe fn put_pixel_argb(bits: *mut u8, dib_w: i32, dib_h: i32, x: i32, y: i32, color: COLORREF) {
+unsafe fn put_pixel_argb(bits: *mut u8, dib_w: i32, dib_h: i32, x: i32, y: i32, px: [u8; 4]) {
     if x < 0 || y < 0 || x >= dib_w || y >= dib_h || bits.is_null() {
         return;
     }
     let stride = (dib_w as usize) * 4;
     let p = bits.add((y as usize) * stride + (x as usize) * 4);
-    // COLORREF is 0x00BBGGRR (red in the low byte); the DIB is B, G, R, A.
-    let c = color.0;
-    *p = ((c >> 16) & 0xFF) as u8; // B
-    *p.add(1) = ((c >> 8) & 0xFF) as u8; // G
-    *p.add(2) = (c & 0xFF) as u8; // R
-    *p.add(3) = 0xFF; // A
+    std::ptr::copy_nonoverlapping(px.as_ptr(), p, 4);
 }
 
-/// 1px-thick filled rect (interior) in ARGB. Used for the four edges
-/// of [`frame_rect_argb`] and as a building block for short connector
-/// arrows; cheap enough to inline into the line/polygon helpers.
-unsafe fn fill_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, color: COLORREF) {
+/// Fill `rect ∩ dib` with one premultiplied pixel value. Used for badge
+/// fills and the four edges of [`frame_rect_argb`].
+unsafe fn fill_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, px: [u8; 4]) {
     let x0 = rect.left.max(0);
     let y0 = rect.top.max(0);
     let x1 = rect.right.min(dib_w);
@@ -2150,20 +2168,46 @@ unsafe fn fill_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, col
         return;
     }
     let stride = (dib_w as usize) * 4;
-    // COLORREF is 0x00BBGGRR (red in the low byte); the DIB is B, G, R, A.
-    let c = color.0;
-    let b = ((c >> 16) & 0xFF) as u8;
-    let g = ((c >> 8) & 0xFF) as u8;
-    let r = (c & 0xFF) as u8;
+    let value = u32::from_ne_bytes(px);
     for y in y0..y1 {
-        let row = bits.add((y as usize) * stride);
-        let mut p = row.add((x0 as usize) * 4);
-        for _ in x0..x1 {
-            *p = b;
-            *p.add(1) = g;
-            *p.add(2) = r;
-            *p.add(3) = 0xFF;
-            p = p.add(4);
+        let row = bits.add((y as usize) * stride + (x0 as usize) * 4) as *mut u32;
+        std::slice::from_raw_parts_mut(row, (x1 - x0) as usize).fill(value);
+    }
+}
+
+/// Composite glyph coverage `cov` in `color` with its top-left at
+/// `(x0, y0)`: premultiplied "over", so glyph pixels end up fully
+/// opaque wherever the coverage is full, whatever was underneath.
+unsafe fn blit_coverage(
+    bits: *mut u8,
+    dib_w: i32,
+    dib_h: i32,
+    cov: &Coverage,
+    x0: i32,
+    y0: i32,
+    color: COLORREF,
+) {
+    if bits.is_null() || cov.a.is_empty() {
+        return;
+    }
+    let fg = premul(color, 255);
+    let stride = (dib_w as usize) * 4;
+    let sx0 = (-x0).max(0);
+    let sx1 = cov.w.min(dib_w - x0);
+    for sy in (-y0).max(0)..cov.h.min(dib_h - y0) {
+        let src = &cov.a[(sy * cov.w) as usize..((sy + 1) * cov.w) as usize];
+        let row = bits.add(((y0 + sy) as usize) * stride);
+        for sx in sx0..sx1 {
+            let c = src[sx as usize] as u32;
+            if c == 0 {
+                continue;
+            }
+            let p = row.add(((x0 + sx) as usize) * 4);
+            let inv = 255 - c;
+            for (k, &f) in fg.iter().enumerate() {
+                let d = *p.add(k) as u32;
+                *p.add(k) = ((f as u32 * c + d * inv + 127) / 255) as u8;
+            }
         }
     }
 }
@@ -2171,7 +2215,7 @@ unsafe fn fill_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, col
 /// 1px frame around `rect`, drawn directly into the DIB. Mirrors
 /// `FrameRect`'s semantics (rect.right and rect.bottom are exclusive)
 /// so callers can keep the same coordinates they used with GDI.
-unsafe fn frame_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, color: COLORREF) {
+unsafe fn frame_rect_argb(bits: *mut u8, dib_w: i32, dib_h: i32, rect: &RECT, color: [u8; 4]) {
     if rect.right <= rect.left || rect.bottom <= rect.top {
         return;
     }
@@ -2218,7 +2262,7 @@ unsafe fn draw_line_argb(
     y0: i32,
     x1: i32,
     y1: i32,
-    color: COLORREF,
+    color: [u8; 4],
 ) {
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
@@ -2253,7 +2297,7 @@ unsafe fn fill_triangle_argb(
     dib_w: i32,
     dib_h: i32,
     pts: &[POINT; 3],
-    color: COLORREF,
+    color: [u8; 4],
 ) {
     let min_x = pts.iter().map(|p| p.x).min().unwrap_or(0).max(0);
     let max_x = pts.iter().map(|p| p.x).max().unwrap_or(0).min(dib_w - 1);
@@ -2395,7 +2439,10 @@ fn build_callout_sprite(
     tail: Option<Tail>,
     fill: COLORREF,
     border: COLORREF,
+    opacity: u8,
 ) -> Sprite {
+    // Whole sprite (fill, border, edges, shadow) at the badge opacity.
+    let op = opacity as f32 / 255.0;
     let dir = tail.map(|t| t.dir);
     let th = g.tail_h;
     let margin = |d: TailDir| if dir == Some(d) { th } else { 0 };
@@ -2521,11 +2568,11 @@ fn build_callout_sprite(
             let a = shape_a[i];
             // Shape over (black) shadow: the shadow adds alpha only.
             let out_a = a + shadow[i] * (1.0 - a);
-            let alpha = (out_a * 255.0).round() as u8;
+            let alpha = (out_a * op * 255.0).round() as u8;
             if alpha == 0 {
                 continue;
             }
-            let [b, gch, rch] = color[i].map(|c| c.round().clamp(0.0, alpha as f32) as u8);
+            let [b, gch, rch] = color[i].map(|c| (c * op).round().clamp(0.0, alpha as f32) as u8);
             px[i] = [b, gch, rch, alpha];
             first = first.min(x);
             last = x + 1;
@@ -2572,7 +2619,9 @@ unsafe fn blit_sprite(bits: *mut u8, dib_w: i32, dib_h: i32, sprite: &Sprite, x0
                 continue;
             }
             let dst = row.add(((x0 + sx) as usize) * 4);
-            if a == 255 {
+            // Copy when opaque or over nothing (the usual case: sprites
+            // are translucent at badge opacity but rarely overlap).
+            if a == 255 || *dst.add(3) == 0 {
                 std::ptr::copy_nonoverlapping(src.as_ptr(), dst, 4);
             } else {
                 let inv = 255 - a as u32;
@@ -2692,7 +2741,7 @@ pub mod bench {
     /// Run only the layout pass. Returns the hint count so the optimizer
     /// can't discard the work.
     pub fn lay_out_only(hints: &[Hint], style: &HintStyle) -> usize {
-        lay_out(hints, style, 0, 0).len()
+        lay_out_estimated(hints, style, 0, 0).len()
     }
 
     /// Off-screen BGRA surface standing in for the overlay DIB.
@@ -2741,13 +2790,34 @@ pub mod bench {
         }
     }
 
+    thread_local! {
+        static BENCH_TEXT: RefCell<LabelText> = RefCell::new(LabelText::new());
+    }
+
     /// A laid-out pick, ready to draw repeatedly.
     pub struct Prepared(OverlayState);
 
     impl Prepared {
-        /// Lay out `hints` and create fonts, as `run_pick` does at pick start.
+        /// Lay out `hints` and rasterise their text, as `run_pick` does at
+        /// pick start. Shares one [`LabelText`] per thread, as the
+        /// persistent overlay does across picks.
         pub fn new(hints: Vec<Hint>, style: HintStyle) -> Self {
-            Self(unsafe { OverlayState::new(hints, style, 0, 0) })
+            BENCH_TEXT.with(|t| {
+                Self(unsafe { OverlayState::new(hints, style, 0, 0, &mut t.borrow_mut()) })
+            })
+        }
+
+        /// Badge (and extra pill) rects of every laid hint, in surface
+        /// coordinates: `(left, top, right, bottom)`.
+        pub fn badge_rects(&self) -> Vec<(i32, i32, i32, i32)> {
+            self.0
+                .laid
+                .iter()
+                .map(|h| {
+                    let r = h.extra_rect.unwrap_or(h.badge_rect);
+                    (h.badge_rect.left, h.badge_rect.top, r.right, r.bottom)
+                })
+                .collect()
         }
 
         /// Simulate the user having typed `prefix` (hides non-matching hints).
@@ -2797,10 +2867,7 @@ pub mod bench {
 
         /// Draw every visible hint (no clear, no DWM hand-off).
         pub fn draw(&self, surface: &mut Surface) {
-            unsafe {
-                self.0
-                    .draw_all(surface.mem_dc, surface.bits, surface.width, surface.height)
-            }
+            unsafe { self.0.draw_all(surface.bits, surface.width, surface.height) }
         }
     }
 }
@@ -2914,7 +2981,7 @@ mod layout_tests {
         // screens (multi-monitor + Cursor / VS Code) into a wall of
         // overlapping badges.
         let style = element_style();
-        let laid = lay_out(&[hint(100, 200, 50, 30, "a")], &style, 0, 0);
+        let laid = lay_out_estimated(&[hint(100, 200, 50, 30, "a")], &style, 0, 0);
         assert_eq!(laid[0].badge_rect.left, 100);
         assert_eq!(laid[0].badge_rect.top, 200);
     }
@@ -2925,7 +2992,7 @@ mod layout_tests {
         // typically maximized — `OutsideTop` would push the badge above
         // the monitor and make it invisible.
         let style = window_style();
-        let laid = lay_out(&[hint(100, 200, 800, 600, "a")], &style, 0, 0);
+        let laid = lay_out_estimated(&[hint(100, 200, 800, 600, "a")], &style, 0, 0);
         assert_eq!(laid[0].badge_rect.left, 100);
         assert_eq!(laid[0].badge_rect.top, 200);
     }
@@ -2938,7 +3005,7 @@ mod layout_tests {
         // reasons in concrete top-left coordinates without having to
         // subtract the OutsideTop offset.
         let style = window_style();
-        let laid = lay_out(
+        let laid = lay_out_estimated(
             &[hint(0, 0, 200, 100, "a"), hint(0, 0, 200, 100, "b")],
             &style,
             0,
@@ -3068,7 +3135,7 @@ mod layout_tests {
     fn lay_out_records_target_rect_in_client_space() {
         // origin offset must be subtracted from every target rect so the
         // leader painter doesn't have to know about virtual-desktop coords.
-        let laid = lay_out(&[hint(150, 250, 60, 40, "a")], &element_style(), 100, 200);
+        let laid = lay_out_estimated(&[hint(150, 250, 60, 40, "a")], &element_style(), 100, 200);
         assert_eq!(laid[0].target_rect.left, 50);
         assert_eq!(laid[0].target_rect.top, 50);
         assert_eq!(laid[0].target_rect.right, 110);
@@ -3189,7 +3256,7 @@ mod callout_tests {
     fn single_callout_sits_below_cutting_into_bottom_centre() {
         let g = style().callout_geom();
         assert!(g.cut_in > 0);
-        let laid = lay_out(&[hint(400, 300, 60, 30, "a")], &style(), 0, 0);
+        let laid = lay_out_estimated(&[hint(400, 300, 60, 30, "a")], &style(), 0, 0);
         let h = &laid[0];
         let t = h.tail.expect("tail");
         assert_eq!(t.dir, TailDir::Up);
@@ -3207,7 +3274,7 @@ mod callout_tests {
     #[test]
     fn cut_in_is_capped_for_tiny_elements() {
         // A 6px-tall control: the tip may reach at most 2px inside.
-        let laid = lay_out(&[hint(400, 300, 60, 6, "a")], &style(), 0, 0);
+        let laid = lay_out_estimated(&[hint(400, 300, 60, 6, "a")], &style(), 0, 0);
         assert_eq!(tip(&laid[0]), POINT { x: 430, y: 304 });
     }
 
@@ -3215,7 +3282,7 @@ mod callout_tests {
     fn callout_flips_above_at_monitor_bottom() {
         let sh = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         let g = style().callout_geom();
-        let laid = lay_out(&[hint(400, sh - 30, 60, 30, "a")], &style(), 0, 0);
+        let laid = lay_out_estimated(&[hint(400, sh - 30, 60, 30, "a")], &style(), 0, 0);
         let h = &laid[0];
         assert_eq!(h.tail.map(|t| t.dir), Some(TailDir::Down));
         assert_eq!(h.badge_rect.bottom, sh - 30 + g.cut_in - g.tail_h);
@@ -3234,7 +3301,7 @@ mod callout_tests {
         // sliding so the tip sits at the body's inner left edge fits.
         let g = style().callout_geom();
         let inner = g.inner();
-        let laid = lay_out(&[hint(0, 300, 2 * inner, 30, "a")], &style(), 0, 0);
+        let laid = lay_out_estimated(&[hint(0, 300, 2 * inner, 30, "a")], &style(), 0, 0);
         let h = &laid[0];
         let t = h.tail.expect("tail");
         assert_eq!(t.dir, TailDir::Up);
@@ -3262,7 +3329,7 @@ mod callout_tests {
         let hints: Vec<Hint> = (0..3)
             .map(|i| hint(400 + i * d, 300, 16, 16, &format!("a{i}")))
             .collect();
-        let laid = lay_out(&hints, &style(), 0, 0);
+        let laid = lay_out_estimated(&hints, &style(), 0, 0);
         assert_no_overlap(&laid);
         let cut = g.cut_in.min(16 / 3);
         for (h, src) in laid.iter().zip(&hints) {
@@ -3301,7 +3368,7 @@ mod callout_tests {
         let hints: Vec<Hint> = (0..3)
             .map(|i| hint(300, 300 + i * 10, 200, 10, &format!("{i}")))
             .collect();
-        let laid = lay_out(&hints, &style(), 0, 0);
+        let laid = lay_out_estimated(&hints, &style(), 0, 0);
         assert_no_overlap(&laid);
         assert_eq!(laid[0].tail.map(|t| t.dir), Some(TailDir::Up));
         let side: Vec<usize> = (0..3)
@@ -3332,7 +3399,7 @@ mod callout_tests {
     fn hints_with_extra_text_keep_rect_layout() {
         let mut h = hint(400, 300, 60, 30, "a");
         h.extra = Some("title".into());
-        let laid = lay_out(&[h], &style(), 0, 0);
+        let laid = lay_out_estimated(&[h], &style(), 0, 0);
         assert!(laid[0].tail.is_none());
         assert!(!laid[0].callout, "drawn (and outlined) as a rect badge");
         assert!(laid[0].extra_rect.is_some());
@@ -3353,7 +3420,7 @@ mod callout_tests {
                 )
             })
             .collect();
-        let laid = lay_out(&hints, &style(), 0, 0);
+        let laid = lay_out_estimated(&hints, &style(), 0, 0);
         let tailed: Vec<LaidHint> = laid.into_iter().filter(|h| h.tail.is_some()).collect();
         assert_no_overlap(&tailed);
     }
@@ -3367,6 +3434,7 @@ mod callout_tests {
             tail,
             COLORREF(0x0000E5FF),
             COLORREF(0x00202020),
+            255,
         )
     }
 
@@ -3424,14 +3492,14 @@ mod callout_tests {
         let yellow = parse_hex_color("#FFE500").unwrap();
         let mut buf = vec![0u8; 4 * 4 * 4];
         unsafe {
-            put_pixel_argb(buf.as_mut_ptr(), 4, 4, 0, 0, yellow);
+            put_pixel_argb(buf.as_mut_ptr(), 4, 4, 0, 0, premul(yellow, 255));
             let r = RECT {
                 left: 1,
                 top: 1,
                 right: 2,
                 bottom: 2,
             };
-            fill_rect_argb(buf.as_mut_ptr(), 4, 4, &r, yellow);
+            fill_rect_argb(buf.as_mut_ptr(), 4, 4, &r, premul(yellow, 255));
         }
         assert_eq!(&buf[0..4], &[0x00, 0xE5, 0xFF, 0xFF]);
         let i = (4 + 1) * 4;
@@ -3463,7 +3531,9 @@ mod callout_tests {
             tail: None,
         };
         let outline_at_corner = |callout: bool| {
-            let state = unsafe { OverlayState::new(Vec::new(), HintStyle::elements(), 0, 0) };
+            let mut text = LabelText::new();
+            let state =
+                unsafe { OverlayState::new(Vec::new(), HintStyle::elements(), 0, 0, &mut text) };
             let mut buf = vec![0u8; 32 * 32 * 4];
             unsafe { state.draw_leader_dib(buf.as_mut_ptr(), 32, 32, &hint(callout)) };
             // Bottom-right corner of the target frame, away from any arrow.
@@ -3471,7 +3541,11 @@ mod callout_tests {
             buf[i + 3]
         };
         assert_eq!(outline_at_corner(true), 0);
-        assert_eq!(outline_at_corner(false), 255);
+        // Outlines carry the badge opacity, like the badge.
+        assert_eq!(
+            outline_at_corner(false),
+            HintStyle::elements().badge_opacity
+        );
     }
 
     #[test]
@@ -3514,6 +3588,71 @@ mod callout_tests {
             blit_sprite(buf.as_mut_ptr(), 10, 10, &s, -5, -5);
             blit_sprite(buf.as_mut_ptr(), 10, 10, &s, 8, 8);
         }
+    }
+
+    #[test]
+    fn premul_scales_channels_by_alpha() {
+        let yellow = COLORREF(0x0000E5FF);
+        assert_eq!(premul(yellow, 255), [0x00, 0xE5, 0xFF, 0xFF]);
+        assert_eq!(premul(yellow, 0), [0, 0, 0, 0]);
+        assert_eq!(premul(yellow, 128), [0x00, 0x73, 0x80, 0x80]);
+    }
+
+    #[test]
+    fn sprite_opacity_scales_alpha_and_stays_premultiplied() {
+        let g = style().callout_geom();
+        let full = sprite(None);
+        let half = build_callout_sprite(
+            24,
+            g.body_h,
+            g,
+            None,
+            COLORREF(0x0000E5FF),
+            COLORREF(0x00202020),
+            128,
+        );
+        let (x, y) = (full.body_x + 12, full.body_y + g.body_h / 2);
+        assert_eq!(pixel(&half, x, y)[3], 128);
+        for (p, q) in half.px.iter().zip(&full.px) {
+            assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
+            assert!(p[3] <= q[3]);
+        }
+    }
+
+    #[test]
+    fn coverage_blit_makes_full_ink_opaque_over_translucent_fill() {
+        let cov = Coverage {
+            w: 3,
+            h: 1,
+            a: vec![0, 128, 255],
+        };
+        // Translucent yellow fill (badge at ~76%).
+        let fill = premul(COLORREF(0x0000E5FF), 195);
+        let mut buf: Vec<u8> = fill.repeat(3);
+        unsafe { blit_coverage(buf.as_mut_ptr(), 3, 1, &cov, 0, 0, COLORREF(0)) };
+        assert_eq!(&buf[0..4], &fill, "no ink leaves the fill alone");
+        assert_eq!(&buf[8..12], &[0, 0, 0, 255], "full ink is opaque black");
+        let mid = &buf[4..8];
+        assert!(mid[3] > fill[3] && mid[3] < 255, "partial ink raises alpha");
+        assert!(mid[2] < fill[2], "partial ink darkens");
+        assert!(mid[0] <= mid[3] && mid[1] <= mid[3] && mid[2] <= mid[3]);
+    }
+
+    #[test]
+    fn coverage_blit_clips_at_buffer_edges() {
+        let cov = Coverage {
+            w: 4,
+            h: 4,
+            a: vec![255; 16],
+        };
+        let mut buf = vec![0u8; 3 * 3 * 4];
+        unsafe {
+            blit_coverage(buf.as_mut_ptr(), 3, 3, &cov, -2, -2, COLORREF(0x00FF_FFFF));
+            blit_coverage(buf.as_mut_ptr(), 3, 3, &cov, 2, 2, COLORREF(0x00FF_FFFF));
+        }
+        assert_eq!(&buf[0..4], &[255; 4]);
+        assert_eq!(&buf[32..36], &[255; 4]);
+        assert_eq!(&buf[8..12], &[0; 4]);
     }
 }
 

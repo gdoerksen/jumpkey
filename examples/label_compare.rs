@@ -1,4 +1,4 @@
-//! Render a side-by-side contact sheet of hint-label rendering options.
+//! Render a                     .map(|s| s.layouts[i].1)ide-by-side contact sheet of hint-label rendering options.
 //!
 //! Rows are rendering pipelines (the current GDI path plus candidate
 //! fixes), each composited over light, dark and busy backgrounds with
@@ -801,12 +801,111 @@ mod imp {
         gdi_text(s, font, text, &r, Rgb(0x20, 0x20, 0x20), false);
     }
 
+    /// Premultiplied BGRA crop of what the real overlay draws.
+    struct RealCrop {
+        px: Vec<u8>,
+        w: i32,
+        h: i32,
+    }
+
+    /// Render `st`'s sample labels with jumpkey's own overlay code
+    /// (layout, sprites, DirectWrite masks, per-pixel opacity) and crop
+    /// the badges. Needs `--features bench` for the overlay's bench API.
+    #[cfg(feature = "bench")]
+    fn real_overlay(st: &Style, scale: f32) -> RealCrop {
+        use jumpkey::windows::overlay::bench::{Prepared, Surface};
+        use jumpkey::windows::overlay::{Hint, HintStyle};
+        use jumpkey::Bounds;
+
+        let style = if st.callout {
+            HintStyle::elements()
+        } else {
+            HintStyle::windows()
+        }
+        .scaled_for_dpi(scale);
+        let fh = style.font_height;
+        let (ox, oy) = (200, 200);
+        // Element targets small and spaced so callouts sit below each;
+        // window targets wide so badge + title pill fit inside.
+        let (tw, th, step) = if st.callout {
+            (fh * 3, fh * 2, fh * 4)
+        } else {
+            (fh * 9, fh * 3, fh * 10)
+        };
+        let hints: Vec<Hint> = st
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(i, l)| Hint {
+                bounds: Bounds {
+                    x: ox + i as i32 * step,
+                    y: oy,
+                    width: tw,
+                    height: th,
+                },
+                label: l.to_string(),
+                extra: (!st.callout).then(|| "Edge".to_string()),
+            })
+            .collect();
+        let (sw, sh) = (ox + step * st.labels.len() as i32 + 200, oy + th * 4);
+        let mut surface = Surface::new(sw, sh);
+        let prepared = Prepared::new(hints, style);
+        prepared.draw(&mut surface);
+
+        // The targets are spread out so layout keeps them apart; crop each
+        // badge on its own and pack them like the other rows. Margins
+        // leave room for the callout tail above and the shadow below.
+        let (m_top, m_side, m_bottom) = if st.callout {
+            (fh, 3, 5)
+        } else {
+            (MARGIN, 0, MARGIN)
+        };
+        let gap = (scaled(8, scale, true) - 2 * m_side).max(0);
+        let crops: Vec<(i32, i32, i32, i32)> = prepared
+            .badge_rects()
+            .into_iter()
+            .map(|(l, t, r, b)| {
+                (
+                    (l - m_side).max(0),
+                    (t - m_top).max(0),
+                    (r + m_side).min(sw),
+                    (b + m_bottom).min(sh),
+                )
+            })
+            .collect();
+        let h = crops.iter().map(|c| c.3 - c.1).max().unwrap_or(0);
+        let w =
+            crops.iter().map(|c| c.2 - c.0).sum::<i32>() + gap * (crops.len() as i32 - 1).max(0);
+        let src = surface.pixels();
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        let mut x = 0;
+        for &(l, t, r, b) in &crops {
+            for y in t..b {
+                let from = &src[((y * sw + l) * 4) as usize..((y * sw + r) * 4) as usize];
+                let at = (((y - t) * w + x) * 4) as usize;
+                px[at..at + from.len()].copy_from_slice(from);
+            }
+            x += r - l + gap;
+        }
+        RealCrop { px, w, h }
+    }
+
+    #[cfg(not(feature = "bench"))]
+    fn real_overlay(_: &Style, _: f32) -> RealCrop {
+        RealCrop {
+            px: Vec::new(),
+            w: 0,
+            h: 0,
+        }
+    }
+
     unsafe fn render_sheet(ctx: &Ctx, scale: f32, path: &PathBuf) -> Result<()> {
         struct Section<'a> {
             st: &'a Style,
             fonts: Vec<FontRes>,
             layouts: Vec<(Vec<Badge>, i32, i32)>,
             cell_h: i32,
+            real: RealCrop,
         }
 
         let probe = Surface::new(1, 1)?;
@@ -827,10 +926,12 @@ mod imp {
                 fonts,
                 layouts,
                 cell_h: body_h + 2 * MARGIN,
+                real: real_overlay(st, scale),
             });
         }
 
-        // Column widths: widest cell per font across both sections.
+        // Column widths: widest cell per font across both sections. Row 7
+        // (the real overlay) spans the sheet instead of setting a column.
         let col_w: Vec<i32> = (0..FONTS.len())
             .map(|i| {
                 sections
@@ -843,9 +944,18 @@ mod imp {
             .collect();
         let width = LABEL_COL + col_w.iter().sum::<i32>();
         let rows = PIPELINES.len() * BACKGROUNDS.len();
+        let real_rows = |s: &Section| {
+            if s.real.w > 0 {
+                BACKGROUNDS.len() as i32 * s.real.h + 6
+            } else {
+                0
+            }
+        };
         let height: i32 = sections
             .iter()
-            .map(|s| 2 * HEADER_H + rows as i32 * s.cell_h + PIPELINES.len() as i32 * 6)
+            .map(|s| {
+                2 * HEADER_H + rows as i32 * s.cell_h + PIPELINES.len() as i32 * 6 + real_rows(s)
+            })
             .sum::<i32>()
             + HEADER_H;
 
@@ -954,10 +1064,72 @@ mod imp {
                     y += sec.cell_h;
                 }
             }
+            if sec.real.w > 0 {
+                y = render_real_rows(&mut sheet, ctx, &sec.real, y, width)?;
+            }
             y += HEADER_H / 2;
         }
 
         write_png(&mut sheet, path)
+    }
+
+    /// Row 7: the real overlay's crop over each background, composited
+    /// with `SourceConstantAlpha = 255` as the overlay now hands DWM.
+    unsafe fn render_real_rows(
+        sheet: &mut Surface,
+        ctx: &Ctx,
+        real: &RealCrop,
+        mut y: i32,
+        width: i32,
+    ) -> Result<i32> {
+        fill(
+            sheet,
+            &RECT {
+                left: 0,
+                top: y,
+                right: width,
+                bottom: y + 2,
+            },
+            Rgb(0xC0, 0xC0, 0xC0),
+        );
+        y += 6;
+        let mut cell = Surface::new(real.w, real.h)?;
+        for (bi, bg) in BACKGROUNDS.iter().enumerate() {
+            let label = if bi == 0 {
+                format!(
+                    "{}. jumpkey overlay (this build, Consolas)",
+                    PIPELINES.len() + 1
+                )
+            } else {
+                String::new()
+            };
+            caption(
+                sheet,
+                ctx.caption,
+                &label,
+                MARGIN,
+                y,
+                LABEL_COL - 60,
+                real.h,
+            );
+            caption(sheet, ctx.caption, bg, LABEL_COL - 50, y, 50, real.h);
+            let full = RECT {
+                left: LABEL_COL,
+                top: y,
+                right: width,
+                bottom: y + real.h,
+            };
+            sheet.each(&full, |px, py, p| {
+                let c = background_px(bi, px - LABEL_COL, py - y);
+                p[0] = c.2;
+                p[1] = c.1;
+                p[2] = c.0;
+            });
+            cell.px().copy_from_slice(&real.px);
+            composite(sheet, &mut cell, LABEL_COL + MARGIN, y, 255, bi);
+            y += real.h;
+        }
+        Ok(y)
     }
 
     fn write_png(s: &mut Surface, path: &PathBuf) -> Result<()> {
