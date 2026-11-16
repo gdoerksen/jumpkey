@@ -1,4 +1,4 @@
-//! Render a side-by-side contact sheet of hint-label rendering options.
+//! Render a                     .map(|s| s.layouts[i].1)ide-by-side contact sheet of hint-label rendering options.
 //!
 //! Rows are rendering pipelines (the current GDI path plus candidate
 //! fixes), each composited over light, dark and busy backgrounds with
@@ -844,30 +844,50 @@ mod imp {
                     height: th,
                 },
                 label: l.to_string(),
-                extra: (!st.callout).then(|| "Notepad".to_string()),
+                extra: (!st.callout).then(|| "Edge".to_string()),
             })
             .collect();
         let (sw, sh) = (ox + step * st.labels.len() as i32 + 200, oy + th * 4);
         let mut surface = Surface::new(sw, sh);
         let prepared = Prepared::new(hints, style);
         prepared.draw(&mut surface);
-        let rects = prepared.badge_rects();
-        let m = fh; // room for callout tails and shadows
-        let l = rects.iter().map(|r| r.0).min().unwrap_or(0) - m;
-        let t = rects.iter().map(|r| r.1).min().unwrap_or(0) - m;
-        let r = rects.iter().map(|r| r.2).max().unwrap_or(0) + m;
-        let b = rects.iter().map(|r| r.3).max().unwrap_or(0) + m;
-        let (l, t, r, b) = (l.max(0), t.max(0), r.min(sw), b.min(sh));
+
+        // The targets are spread out so layout keeps them apart; crop each
+        // badge on its own and pack them like the other rows. Margins
+        // leave room for the callout tail above and the shadow below.
+        let (m_top, m_side, m_bottom) = if st.callout {
+            (fh, 3, 5)
+        } else {
+            (MARGIN, 0, MARGIN)
+        };
+        let gap = (scaled(8, scale, true) - 2 * m_side).max(0);
+        let crops: Vec<(i32, i32, i32, i32)> = prepared
+            .badge_rects()
+            .into_iter()
+            .map(|(l, t, r, b)| {
+                (
+                    (l - m_side).max(0),
+                    (t - m_top).max(0),
+                    (r + m_side).min(sw),
+                    (b + m_bottom).min(sh),
+                )
+            })
+            .collect();
+        let h = crops.iter().map(|c| c.3 - c.1).max().unwrap_or(0);
+        let w =
+            crops.iter().map(|c| c.2 - c.0).sum::<i32>() + gap * (crops.len() as i32 - 1).max(0);
         let src = surface.pixels();
-        let mut px = Vec::with_capacity(((r - l) * (b - t) * 4) as usize);
-        for y in t..b {
-            px.extend_from_slice(&src[((y * sw + l) * 4) as usize..((y * sw + r) * 4) as usize]);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        let mut x = 0;
+        for &(l, t, r, b) in &crops {
+            for y in t..b {
+                let from = &src[((y * sw + l) * 4) as usize..((y * sw + r) * 4) as usize];
+                let at = (((y - t) * w + x) * 4) as usize;
+                px[at..at + from.len()].copy_from_slice(from);
+            }
+            x += r - l + gap;
         }
-        RealCrop {
-            px,
-            w: r - l,
-            h: b - t,
-        }
+        RealCrop { px, w, h }
     }
 
     #[cfg(not(feature = "bench"))]
@@ -910,16 +930,13 @@ mod imp {
             });
         }
 
-        // Column widths: widest cell per font across both sections (the
-        // real-overlay row draws in the first column).
+        // Column widths: widest cell per font across both sections. Row 7
+        // (the real overlay) spans the sheet instead of setting a column.
         let col_w: Vec<i32> = (0..FONTS.len())
             .map(|i| {
                 sections
                     .iter()
-                    .map(|s| {
-                        let real = if i == 0 { s.real.w + 2 * MARGIN } else { 0 };
-                        s.layouts[i].1.max(real)
-                    })
+                    .map(|s| s.layouts[i].1)
                     .max()
                     .unwrap_or(0)
                     .max(260)
@@ -1048,7 +1065,7 @@ mod imp {
                 }
             }
             if sec.real.w > 0 {
-                y = render_real_rows(&mut sheet, ctx, &sec.real, y, width, col_w[0])?;
+                y = render_real_rows(&mut sheet, ctx, &sec.real, y, width)?;
             }
             y += HEADER_H / 2;
         }
@@ -1064,7 +1081,6 @@ mod imp {
         real: &RealCrop,
         mut y: i32,
         width: i32,
-        col_w: i32,
     ) -> Result<i32> {
         fill(
             sheet,
@@ -1100,7 +1116,7 @@ mod imp {
             let full = RECT {
                 left: LABEL_COL,
                 top: y,
-                right: LABEL_COL + col_w,
+                right: width,
                 bottom: y + real.h,
             };
             sheet.each(&full, |px, py, p| {
