@@ -12,6 +12,7 @@ pub mod config_watcher;
 pub mod hotkey;
 pub mod ipc;
 pub mod keyboard_layout;
+pub(crate) mod label_text;
 pub mod notification;
 pub mod overlay;
 pub mod prewarm;

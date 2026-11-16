@@ -39,8 +39,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
-    # Direct2D + DirectWrite for grayscale-antialiased label text. Used by
-    # `examples/label_compare.rs` to compare against the GDI path.
+    # Direct2D + DirectWrite for the overlay's grayscale-antialiased label
+    # text (`src/windows/label_text.rs`) and `examples/label_compare.rs`.
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
     "Win32_Graphics_DirectWrite",
