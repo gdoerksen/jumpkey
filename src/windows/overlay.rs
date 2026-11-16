@@ -263,14 +263,13 @@ impl HintStyle {
             padding_x: 3,
             padding_y: 1,
             // ~76% opaque: small enough to see through, large enough to
-            // stay readable on busy backgrounds. Combined with the
-            // text_shadow below this trades a little legibility for a
-            // dramatically calmer overlay.
+            // stay readable on busy backgrounds. Trades a little
+            // legibility for a dramatically calmer overlay.
             badge_opacity: 195,
-            // Compensate for the lower opacity by giving the label a 1px
-            // shadow — keeps single-letter labels readable when sitting
-            // on a high-contrast icon.
-            text_shadow: true,
+            // Off: the 1px offset copy smeared the glyphs and made the
+            // labels look soft. `examples/label_compare.rs` renders the
+            // side-by-side comparison this was decided from.
+            text_shadow: false,
             show_leader: true,
             // Same dark grey as the badge border — visually subordinate to
             // the badge itself but contrasts well against typical app UIs.
