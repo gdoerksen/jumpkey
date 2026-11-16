@@ -395,39 +395,20 @@ impl WindowsBackend {
             .context("listing top-level windows for multi-window scope")?;
         let cap = self.max_elements_global;
 
-        // Filter + group by pid. BTreeMap so iteration order is stable
-        // across runs (helpful for test reproducibility and for
-        // attributing trace logs to specific apps). The foreground pid
-        // gets walked first; everything else fans out onto rayon.
-        //
-        // Z-order pruning: `enumerate_visible` returns windows in
-        // top-down z-order. We track the union of higher-z window
-        // bounds per monitor and skip any window whose entire frame is
-        // already covered — that window is hidden from the user, so
-        // walking it would just waste a UIA round-trip and pollute the
-        // overlay with badges the user can't see.
-        let mut by_pid: BTreeMap<u32, Vec<crate::windows::window_picker::TopLevelWindow>> =
-            BTreeMap::new();
+        // Decide which windows to walk and which higher-z windows sit on
+        // top of each (see `plan_windows`), then group by pid. BTreeMap
+        // so iteration order is stable across runs (helpful for test
+        // reproducibility and for attributing trace logs to specific
+        // apps). The foreground pid gets walked first; everything else
+        // fans out onto rayon.
+        let mut by_pid: BTreeMap<u32, Vec<PlannedWindow>> = BTreeMap::new();
         let mut foreground_pid: Option<u32> = None;
-        let mut occlusion = OcclusionTracker::new();
-        for win in candidates {
-            if !accept(&win.bounds) {
-                continue;
-            }
-            // Foreground window is the user's focus; never let occlusion
-            // tracking skip it even if some popup happens to fully cover
-            // its frame for a frame.
-            if win.hwnd != foreground && occlusion.is_fully_covered(&win.bounds) {
-                tracing::debug!(?win.hwnd, title = %win.title,
-                    "skipping fully occluded window");
-                continue;
-            }
-            occlusion.record(&win.bounds);
-            let pid = window_pid(win.hwnd);
-            if win.hwnd == foreground {
+        for planned in plan_windows(candidates, foreground, &mut accept) {
+            let pid = window_pid(planned.win.hwnd);
+            if planned.win.hwnd == foreground {
                 foreground_pid = Some(pid);
             }
-            by_pid.entry(pid).or_default().push(win);
+            by_pid.entry(pid).or_default().push(planned);
         }
 
         // Walk the foreground pid group locally (sequentially through
@@ -446,8 +427,8 @@ impl WindowsBackend {
         if let Some(pid) = foreground_pid {
             if let Some(group) = by_pid.remove(&pid) {
                 let mut group = group;
-                group.sort_by_key(|w| if w.hwnd == foreground { 0 } else { 1 });
-                for win in group {
+                group.sort_by_key(|p| if p.win.hwnd == foreground { 0 } else { 1 });
+                for PlannedWindow { win, occluders } in group {
                     if out.len() >= cap {
                         break;
                     }
@@ -459,7 +440,11 @@ impl WindowsBackend {
                             } else {
                                 PER_WINDOW_HINT_CAP_MULTI.min(remaining)
                             };
-                            out.extend(elements.into_iter().take(per_window));
+                            // Drop occluded elements *before* the cap so
+                            // hidden ones don't consume the window's quota.
+                            let visible =
+                                retain_unoccluded(elements, &occluders, |e| &e.bounds, &win);
+                            out.extend(visible.into_iter().take(per_window));
                         }
                         Err(e) => {
                             tracing::warn!(?win.hwnd, title = %win.title, error = ?e,
@@ -477,8 +462,7 @@ impl WindowsBackend {
         // [`SendWalkRecord`] (see safety note on that type).
         if !by_pid.is_empty() && out.len() < cap {
             use rayon::prelude::*;
-            let groups: Vec<(u32, Vec<crate::windows::window_picker::TopLevelWindow>)> =
-                by_pid.into_iter().collect();
+            let groups: Vec<(u32, Vec<PlannedWindow>)> = by_pid.into_iter().collect();
             let walked: Vec<Vec<SendWalkRecord>> = groups
                 .into_par_iter()
                 .map(|(pid, windows)| {
@@ -507,7 +491,7 @@ impl WindowsBackend {
                         }
                     };
                     let mut local: Vec<SendWalkRecord> = Vec::with_capacity(64);
-                    for win in windows {
+                    for PlannedWindow { win, occluders } in windows {
                         let is_browser = is_browser_window(win.hwnd);
                         match walk_window(
                             &automation,
@@ -517,6 +501,10 @@ impl WindowsBackend {
                             is_browser,
                         ) {
                             Ok(records) => {
+                                // Drop occluded elements before the cap
+                                // so hidden ones don't consume quota.
+                                let records =
+                                    retain_unoccluded(records, &occluders, |r| &r.bounds, &win);
                                 // Per-window cap so one busy background
                                 // window (e.g. a Cursor / VS Code with
                                 // hundreds of UIA matches) can't eat the
@@ -953,66 +941,86 @@ fn rect_overlap_fraction(monitor: &RECT, bounds: &Bounds) -> f32 {
     intersection as f32 / area as f32
 }
 
-/// Multi-monitor z-order occlusion tracker.
-///
-/// `enumerate_visible` returns top-level windows in z-order top to
-/// bottom (highest first). For each candidate we ask: "is this window's
-/// frame already fully covered by one of the higher-z windows?" If so,
-/// the user can't see it, so walking it would only generate badges they
-/// can't act on.
-///
-/// We approximate occlusion by recording every accepted window's
-/// bounds and asking whether the candidate's frame intersects any
-/// **single** previously-recorded rectangle that fully covers it.
-/// True polygon-union coverage would require a sweep-line algorithm
-/// and a lot more code; full single-rect containment catches the
-/// dominant real-world case (a maximized window completely hiding the
-/// one beneath it on the same monitor) without the complexity.
-///
-/// Bounded to a small ring buffer so the check stays O(N) per
-/// candidate even with dozens of visible windows; in practice the
-/// "is fully covered" check exits on the first hit.
-struct OcclusionTracker {
-    higher_z: Vec<Bounds>,
+/// A top-level window selected for walking by [`plan_windows`], plus
+/// the frames of the higher-z windows that overlap it.
+#[derive(Debug, Clone)]
+struct PlannedWindow {
+    win: crate::windows::window_picker::TopLevelWindow,
+    /// Frames of visible higher-z windows intersecting `win.bounds`.
+    /// Elements of `win` entirely under the union of these are hidden.
+    occluders: Vec<Bounds>,
 }
 
-impl OcclusionTracker {
-    fn new() -> Self {
-        Self {
-            higher_z: Vec::with_capacity(16),
+/// Decide which windows a multi-window scope should walk.
+///
+/// `candidates` must be in top-down z-order (as returned by
+/// `enumerate_visible`). Pure function — no UIA, no Win32 — so the
+/// selection logic is unit-testable with synthetic windows.
+///
+/// - Minimized windows are skipped and never occlude anything: their
+///   `bounds` is a synthetic placeholder, not a real frame.
+/// - Every other window counts as an occluder for the windows below it,
+///   **including** ones `accept` rejects (a window living mostly on
+///   another monitor can still cover part of this one).
+/// - A window fully covered by the *union* of the windows above it is
+///   skipped — except the foreground window, which is always walked.
+/// - Each kept window carries the subset of higher-z frames that
+///   overlap it, for per-element filtering after the walk.
+fn plan_windows<F>(
+    candidates: Vec<crate::windows::window_picker::TopLevelWindow>,
+    foreground: HWND,
+    mut accept: F,
+) -> Vec<PlannedWindow>
+where
+    F: FnMut(&Bounds) -> bool,
+{
+    let mut above: Vec<Bounds> = Vec::with_capacity(candidates.len());
+    let mut planned = Vec::new();
+    for win in candidates {
+        if win.is_minimized {
+            continue;
         }
-    }
-
-    /// True when `candidate` is fully contained in (and meaningfully
-    /// smaller than) any previously-recorded higher-z window. The size
-    /// guard prevents a window from accidentally occluding itself when
-    /// the same HWND appears twice — shouldn't happen in a clean
-    /// `EnumWindows` traversal but the guard is cheap insurance.
-    fn is_fully_covered(&self, candidate: &Bounds) -> bool {
-        if candidate.width <= 0 || candidate.height <= 0 {
-            return true; // nothing to walk anyway
-        }
-        for higher in &self.higher_z {
-            if bounds_contains(higher, candidate)
-                && (higher.width as i64 * higher.height as i64)
-                    > (candidate.width as i64 * candidate.height as i64)
-            {
-                return true;
+        let bounds = win.bounds;
+        if accept(&bounds) {
+            let occluders: Vec<Bounds> = above
+                .iter()
+                .filter(|o| o.intersects(&bounds))
+                .copied()
+                .collect();
+            if win.hwnd != foreground && !bounds.is_partly_visible(&occluders) {
+                tracing::debug!(?win.hwnd, title = %win.title,
+                    "skipping fully occluded window");
+            } else {
+                planned.push(PlannedWindow { win, occluders });
             }
         }
-        false
+        above.push(bounds);
     }
-
-    fn record(&mut self, bounds: &Bounds) {
-        self.higher_z.push(*bounds);
-    }
+    planned
 }
 
-fn bounds_contains(outer: &Bounds, inner: &Bounds) -> bool {
-    inner.x >= outer.x
-        && inner.y >= outer.y
-        && (inner.x + inner.width) <= (outer.x + outer.width)
-        && (inner.y + inner.height) <= (outer.y + outer.height)
+/// Keep only the items whose bounds are at least partly visible past
+/// `occluders`, logging how many were dropped for `win`.
+fn retain_unoccluded<T>(
+    items: Vec<T>,
+    occluders: &[Bounds],
+    bounds_of: impl Fn(&T) -> &Bounds,
+    win: &crate::windows::window_picker::TopLevelWindow,
+) -> Vec<T> {
+    if occluders.is_empty() {
+        return items;
+    }
+    let before = items.len();
+    let kept: Vec<T> = items
+        .into_iter()
+        .filter(|item| bounds_of(item).is_partly_visible(occluders))
+        .collect();
+    let dropped = before - kept.len();
+    if dropped > 0 {
+        tracing::debug!(?win.hwnd, title = %win.title, dropped, kept = kept.len(),
+            "dropped occluded elements");
+    }
+    kept
 }
 
 /// Look up the owning process id of `hwnd`. Returns `0` if the call
@@ -1640,7 +1648,7 @@ fn dedup_nested_records(records: Vec<WalkRecord>) -> Vec<WalkRecord> {
                 continue;
             }
             let inner = &records[j].bounds;
-            if !bounds_contains(outer, inner) {
+            if !outer.contains(inner) {
                 continue;
             }
             contained_count += 1;
@@ -2024,6 +2032,122 @@ unsafe fn send_accessibility_probe(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- plan_windows -------------------------------------------------
+
+    use crate::windows::window_picker::TopLevelWindow;
+
+    fn bnd(x: i32, y: i32, width: i32, height: i32) -> Bounds {
+        Bounds {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn hwnd(n: usize) -> HWND {
+        HWND(n as *mut std::ffi::c_void)
+    }
+
+    fn win(n: usize, bounds: Bounds) -> TopLevelWindow {
+        TopLevelWindow {
+            hwnd: hwnd(n),
+            title: format!("win{n}"),
+            bounds,
+            is_minimized: false,
+        }
+    }
+
+    fn planned_ids(planned: &[PlannedWindow]) -> Vec<usize> {
+        planned.iter().map(|p| p.win.hwnd.0 as usize).collect()
+    }
+
+    const SCREEN: Bounds = Bounds {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+    };
+
+    #[test]
+    fn plan_small_over_maximized_keeps_both_with_occluder() {
+        let small = bnd(400, 300, 800, 500);
+        let planned = plan_windows(vec![win(1, small), win(2, SCREEN)], hwnd(1), |_| true);
+        assert_eq!(planned_ids(&planned), vec![1, 2]);
+        assert!(planned[0].occluders.is_empty());
+        assert_eq!(planned[1].occluders, vec![small]);
+    }
+
+    #[test]
+    fn plan_skips_window_hidden_by_union() {
+        let left = bnd(0, 0, 960, 1080);
+        let right = bnd(960, 0, 960, 1080);
+        let under = bnd(500, 200, 900, 600);
+        let planned = plan_windows(
+            vec![win(1, left), win(2, right), win(3, under)],
+            hwnd(1),
+            |_| true,
+        );
+        assert_eq!(planned_ids(&planned), vec![1, 2]);
+    }
+
+    #[test]
+    fn plan_never_skips_foreground() {
+        let planned = plan_windows(
+            vec![win(1, SCREEN), win(2, bnd(100, 100, 200, 200))],
+            hwnd(2),
+            |_| true,
+        );
+        assert_eq!(planned_ids(&planned), vec![1, 2]);
+    }
+
+    #[test]
+    fn plan_ignores_minimized_windows() {
+        let mut minimized = win(1, bnd(0, 0, 200, 40));
+        minimized.is_minimized = true;
+        let planned = plan_windows(vec![minimized, win(2, SCREEN)], hwnd(2), |_| true);
+        assert_eq!(planned_ids(&planned), vec![2]);
+        assert!(planned[0].occluders.is_empty());
+    }
+
+    #[test]
+    fn plan_rejected_window_still_occludes() {
+        // Window 1 lives mostly on a monitor to the left and is rejected
+        // by the scope filter, but its right edge covers part of window 2.
+        let straddler = bnd(-1800, 100, 2000, 600);
+        let on_monitor = bnd(0, 0, 1920, 1080);
+        let planned = plan_windows(vec![win(1, straddler), win(2, on_monitor)], hwnd(2), |b| {
+            b.x >= 0
+        });
+        assert_eq!(planned_ids(&planned), vec![2]);
+        assert_eq!(planned[0].occluders, vec![straddler]);
+    }
+
+    #[test]
+    fn plan_occluders_only_include_overlapping_windows() {
+        let far = bnd(3000, 0, 500, 500);
+        let near = bnd(100, 100, 300, 300);
+        let planned = plan_windows(
+            vec![win(1, far), win(2, near), win(3, SCREEN)],
+            hwnd(2),
+            |_| true,
+        );
+        assert_eq!(planned[2].occluders, vec![near]);
+    }
+
+    #[test]
+    fn retain_unoccluded_drops_hidden_elements() {
+        let w = win(1, SCREEN);
+        let occ = [bnd(400, 300, 800, 500)];
+        let items = vec![
+            bnd(500, 400, 50, 20),  // fully under the occluder
+            bnd(1180, 400, 50, 20), // straddles the occluder's right edge
+            bnd(10, 10, 50, 20),    // clear
+        ];
+        let kept = retain_unoccluded(items, &occ, |b| b, &w);
+        assert_eq!(kept, vec![bnd(1180, 400, 50, 20), bnd(10, 10, 50, 20)]);
+    }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
         RECT {

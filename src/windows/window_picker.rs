@@ -43,6 +43,11 @@ pub struct TopLevelWindow {
     /// bounds" when available, which excludes the invisible 7px shadow
     /// border `GetWindowRect` reports on Win10+.
     pub bounds: Bounds,
+    /// True when the window is minimized. `bounds` is then a synthetic
+    /// placeholder (top-left of the primary monitor) for badge placement
+    /// in the window picker, not a real on-screen frame — callers doing
+    /// geometry (e.g. occlusion) must ignore it.
+    pub is_minimized: bool,
 }
 
 // SAFETY: HWND is just a wrapper around a raw pointer used as an opaque
@@ -195,6 +200,7 @@ unsafe fn describe(hwnd: HWND) -> Option<TopLevelWindow> {
         hwnd,
         title,
         bounds,
+        is_minimized,
     })
 }
 
