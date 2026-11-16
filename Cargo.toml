@@ -39,6 +39,14 @@ windows = { version = "0.58", features = [
     "Win32_UI_HiDpi",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    # Direct2D + DirectWrite for grayscale-antialiased label text. Used by
+    # `examples/label_compare.rs` to compare against the GDI path.
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi_Common",
+    # Gates ID2D1RenderTarget::CreateSolidColorBrush (brush transform type).
+    "Foundation_Numerics",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
     "Win32_System_Registry",
