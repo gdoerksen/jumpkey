@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "tool": "pick-bench",
+  "tool_version": "0.1.0",
+  "run_id": "20261121-154236-baseline",
+  "label": "baseline",
+  "started_local": "20261121-154236",
+  "builds": [
+    {
+      "label": "main",
+      "exe": "target/release/jumpkey.exe",
+      "version": "jumpkey 0.6.0",
+      "exe_bytes": 4828672,
+      "exe_modified_unix": 1795297219
+    }
+  ],
+  "scenarios": [
+    "dense-list",
+    "long-feed",
+    "form",
+    "nested-menu",
+    "tabs",
+    "edge-dense-list",
+    "explorer-folder",
+    "vscode-repo",
+    "terminal-split"
+  ],
+  "patterns": [
+    "switch-then-press:300",
+    "switch-then-press:2000",
+    "repeat-press:300"
+  ],
+  "scopes": [
+    "active_window"
+  ],
+  "iterations": 30,
+  "block_size": 5,
+  "hotkey": "Ctrl+Alt+Shift+F10",
+  "hold_ms": 0,
+  "machine": {
+    "label": null,
+    "host_hash": "8783fd10351dafb2",
+    "cpu_model": "12th Gen Intel(R) Core(TM) i5-12600K",
+    "logical_cores": 16,
+    "ram_bytes": 68482113536,
+    "os_build": "26300.9974",
+    "os_display_version": "26H2",
+    "bios_manufacturer": "Gigabyte Technology Co., Ltd.",
+    "bios_product": "Z690 UD AX DDR4",
+    "is_vm": false,
+    "display_adapter": "NVIDIA GeForce RTX 3070",
+    "monitors": [
+      {
+        "x": 0,
+        "y": 0,
+        "width": 3440,
+        "height": 1440,
+        "dpi": 96,
+        "primary": true
+      },
+      {
+        "x": -1050,
+        "y": 0,
+        "width": 1050,
+        "height": 1680,
+        "dpi": 96,
+        "primary": false
+      },
+      {
+        "x": 3440,
+        "y": 0,
+        "width": 3840,
+        "height": 2160,
+        "dpi": 144,
+        "primary": false
+      }
+    ],
+    "power": {
+      "source": "ac",
+      "battery_percent": null,
+      "plan_guid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+      "plan_name": "Balanced"
+    },
+    "qpc_hz": 10000000,
+    "tsc_hz": 3686401666.4667306
+  },
+  "warnings": [],
+  "finished_local": "20261121-160537",
+  "aborted": null
+}

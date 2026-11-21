@@ -14,6 +14,93 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 
 ---
 
+## 2026-11-21: baseline before the refactor (`154236-baseline`)
+
+**The reference for comparing refactors.** Raw records:
+`baseline-a4d2f52/`. App commit `a4d2f52` (main). `pick-bench --preset
+baseline` (harness from `fix/bench-startup-wait`: waits for the splash,
+retries the first press): every scenario × `switch-then-press:300`,
+`switch-then-press:2000`, `repeat-press:300`, active-window scope, 30
+presses each (810 presses, 0 timeouts). Throwaway browser profiles,
+1600×1000 on the primary monitor (96 dpi), Balanced power plan as for
+every entry here.
+
+| Scenario | p50 2000 ms | p95 2000 ms | p50 300 ms | repeat-press: cache hits | repeat-press: misses p50 | jumpkey CPU | target CPU |
+|---|---|---|---|---|---|---|---|
+| long-feed | 1272 | 1324 | 1266 | 14/30 at 26 | 1263 | 421 | 994 |
+| dense-list | 748 | 778 | 742 | 15/30 at 26 | 758 | 253 | 597 |
+| edge-dense-list | 731 | 966 | 744 | 15/30 at 25 | 990 | 261 | 587 |
+| explorer-folder | 155 | 161 | 160 | 15/30 at 25 | 155 | 48 | 111 |
+| form | 89 | 96 | 90 | 13/30 at 25 | 83 | 44 | 88 |
+| tabs | 86 | 91 | 84 | 15/30 at 25 | 85 | 43 | 94 |
+| nested-menu | 85 | 93 | 77 | 14/30 at 26 | 85 | 42 | 90 |
+| vscode-repo | 70 | 83 | 74 | 15/30 at 26 | 74 | 37 | 82 |
+| terminal-split | 37 | 50 | 33 | 18/30 at 25 | 37 | 22 | 17 |
+
+hotkey → visible in ms; CPU = mean ms per press at 2000 ms. "Cache
+hits" = repeat presses under 30 ms (for Terminal a full search is barely
+slower, so its split is approximate). jumpkey private bytes 75–85 MB.
+Idle CPU in the 10 s after start: 2.5 % of one core.
+
+First press after start (ms, the three jumpkey starts per scenario):
+
+| Scenario | 1st start | 2nd | 3rd |
+|---|---|---|---|
+| long-feed | 1774 | 1422 | 1489 |
+| form | 1224 | 121 | 114 |
+| tabs | 1133 | 116 | 115 |
+| dense-list | 923 | 764 | 757 |
+| edge-dense-list | 852 | 849 | 852 |
+| nested-menu | 118 (2nd try) | 109 | 113 |
+| explorer-folder | 175 | 181 | 178 |
+| vscode-repo | 119 | 99 | 106 |
+| terminal-split | 68 | 70 | 63 |
+
+On small Vivaldi pages the first press on a freshly opened page costs
+~1.1–1.2 s (Chromium building its accessibility tree), later starts
+~0.1 s. On the big pages the first press is within ~1.5× of a normal
+press. nested-menu's first try showed nothing (see below); its 118 ms is
+the second try, after the page had warmed up, so it isn't a cold value.
+Startup (spawn → splash closed) 2.93 s, once 4.7 s.
+
+In-app telemetry from the same day (PR #26, dense-list, 10 presses): 98 %
+of a press is the browser walk's tree search (~930 ms, 2,111 nodes
+visited for 134 elements); overlay drawing ~19 ms, show + focus ~10 ms,
+labels and sort < 0.2 ms.
+
+### What this shows
+
+- **Waiting 300 ms or 2 s after switching makes no difference** (742 vs
+  748 on dense-list): the cache-warming walk never finishes in time to
+  help, so every press after a switch is a full search.
+- **The cache only helps an immediate retry, and only every other
+  time:** repeat presses alternate between a hit (~25 ms) and a full
+  search. An entry expires 500 ms after it was stored and a hit doesn't
+  refresh it, so the press after a hit misses.
+- **Browser pages are 10–35× slower than desktop apps** and scale with
+  page size (form 89 → dense-list 748 → long-feed 1272), not label
+  count. This is the walk visiting the whole page, off-screen included
+  (review #41); it's where a refactor can win the most.
+- Desktop apps (UIA server-side search) are 37–155 ms; only Terminal
+  meets the README's 50 ms goal at p50.
+- edge-dense-list p95 (966) and its repeat-press misses (990) are well
+  above its p50: Edge occasionally takes ~250 ms longer on the same page.
+- **jumpkey sometimes stalls 3–5 s before its splash appears** while a
+  freshly launched browser is busy (4 of the last 5 runs had at least
+  one). Not investigated; something in startup before the splash is
+  shown waits on other processes.
+- **Open issue, user-visible: a press right after opening a page can
+  show nothing.** nested-menu's first press found no elements on the
+  freshly opened Vivaldi page (jumpkey logs "no interactable elements"),
+  so no overlay appeared; the same happened in two runs before the
+  harness retried. Likely the browser was still busy and the 50 ms
+  accessibility activation timed out. pick-bench now retries and records
+  `first_press_attempts`, so this stays visible in the data but isn't in
+  the main numbers. Both this and the startup stall are worth fixing in
+  jumpkey.
+
+---
+
 ## 2026-11-21: smoke test of every scenario (`122329-smoke`)
 
 App commit `7a9c8ce` (main). `pick-bench --all --pattern
@@ -36,6 +123,15 @@ baseline.**
 
 (Label counts from jumpkey's log, matched to scenarios by jumpkey
 restarts, which happen once per scenario.)
+
+**Correction (found later the same day):** in the first two scenarios
+(dense-list, long-feed) jumpkey took ~4 s before its splash appeared.
+pick-bench only waited 3 s for a window, so it pressed the hotkey before
+jumpkey had registered it and timed the splash instead. Their "first
+press after start" values (2033, 2274) are not real; the other rows are
+unaffected (no stall in jumpkey's log), and the per-press columns are
+fine. pick-bench now waits up to 15 s for the splash and records
+`startup_ms`.
 
 **Target CPU method fixed after this run:** the harness summed the
 window process's whole tree. For Explorer that's the shell (69
@@ -127,5 +223,5 @@ Other measurements from the same runs:
 The first four rows use the old default pattern (300 ms wait, racing the
 cache-warming search) and/or the real browser profile. Compare future
 runs against the A/A rows: `switch-then-press:2000`, throwaway profile,
-1600×1000 on the primary monitor. A full-matrix baseline hasn't been
-recorded yet.
+1600×1000 on the primary monitor, or better, against the baseline
+(`154236-baseline`, above).

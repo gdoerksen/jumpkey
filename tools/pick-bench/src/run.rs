@@ -34,6 +34,15 @@ const HIDE_TIMEOUT: Duration = Duration::from_secs(5);
 const LATE_SHOW_GRACE: Duration = Duration::from_secs(10);
 /// The first press after start pays one-time costs; allow more time.
 const FIRST_PRESS_TIMEOUT: Duration = Duration::from_secs(20);
+/// Tries for the first press before the run is abandoned.
+const FIRST_PRESS_ATTEMPTS: u32 = 3;
+/// Wait between first-press tries, for the target to finish starting.
+const FIRST_PRESS_RETRY_WAIT: Duration = Duration::from_secs(3);
+/// Startups slower than this are reported. A normal start (splash
+/// shown for its 2.5 s minimum) takes ~2.9 s; a start that stalled before
+/// the splash takes ~4-5 s, because the stall uses up the splash's
+/// minimum display time.
+const SLOW_STARTUP_MS: f64 = 3_500.0;
 /// Upper bound for jumpkey's startup (splash screen etc.).
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Time to look away (neutral window focused) in switch-then-press.
@@ -71,7 +80,10 @@ struct Ctx {
     /// Builds that already had their idle measurement, per scope.
     idle_done: HashSet<(String, String)>,
     results: Vec<Iteration>,
-    first_presses: Vec<(String, String, String, u64)>,
+    /// `(build, scope, scenario, first press us, tries)`.
+    first_presses: Vec<(String, String, String, u64, u32)>,
+    /// `(build, scope, scenario, startup ms)` for slow startups.
+    slow_startups: Vec<(String, String, String, f64)>,
 }
 
 struct Target {
@@ -264,6 +276,7 @@ pub fn run(opts: Options) -> Result<()> {
         idle_done: HashSet::new(),
         results: Vec::new(),
         first_presses: Vec::new(),
+        slow_startups: Vec::new(),
     };
 
     let outcome = run_matrix(
@@ -419,23 +432,64 @@ fn run_block(
     let result = (|| -> Result<()> {
         // Warm-up / readiness: the first press after start. Recorded on
         // its own because it pays one-time costs.
-        if ctx.opts.press_during_startup {
+        let startup = if ctx.opts.press_during_startup {
             // First press lands while jumpkey is still starting up; the
             // timeout below then covers the whole startup.
             window::focus(target.hwnd)?;
             pump_sleep(Duration::from_millis(200));
+            None
         } else {
-            jk.wait_startup(STARTUP_TIMEOUT)?;
+            let s = jk.wait_startup(STARTUP_TIMEOUT)?;
+            if s.ready_ms > SLOW_STARTUP_MS || !s.saw_window {
+                ctx.slow_startups.push((
+                    build.label.clone(),
+                    scope.into(),
+                    target.name.clone(),
+                    s.ready_ms,
+                ));
+                println!(
+                    "   note: jumpkey took {:.1} s to start{}",
+                    s.ready_ms / 1000.0,
+                    if s.saw_window {
+                        ""
+                    } else {
+                        " (no splash seen)"
+                    }
+                );
+            }
+            // The splash may have taken the foreground: focus the target
+            // again right before the first press.
             window::focus(target.hwnd)?;
             pump_sleep(Duration::from_millis(500));
-        }
-        let first = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
-        let Some(first_visible_qpc) = first.visible_qpc else {
-            bail!(
-                "jumpkey never showed an overlay after the hotkey ({}). Check the hotkey matches \
-                 the config template, and that the target window has clickable elements.",
-                chord.text
-            );
+            Some(s)
+        };
+        // A freshly started target (a browser building its accessibility
+        // tree) can answer jumpkey's first search with nothing, and
+        // jumpkey then shows no overlay. Retry a few times before giving
+        // up on the run; the attempts are recorded.
+        let mut first_attempts = 0;
+        let (first, first_visible_qpc) = loop {
+            first_attempts += 1;
+            let press = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
+            if let Some(v) = press.visible_qpc {
+                break (press, v);
+            }
+            if !jk.is_running() {
+                bail!("jumpkey exited during its first press after starting");
+            }
+            if first_attempts >= FIRST_PRESS_ATTEMPTS {
+                bail!(
+                    "jumpkey never showed an overlay after the hotkey ({}), {} tries. Check the \
+                     hotkey matches the config template, and that the target window has \
+                     clickable elements.",
+                    chord.text,
+                    first_attempts
+                );
+            }
+            println!("   note: no overlay on first press (try {first_attempts}); retrying");
+            pump_sleep(FIRST_PRESS_RETRY_WAIT);
+            window::focus(target.hwnd)?;
+            pump_sleep(Duration::from_millis(500));
         };
         let first_us = qpc_delta_us(first.sent_qpc, first_visible_qpc);
         ctx.first_presses.push((
@@ -443,14 +497,18 @@ fn run_block(
             scope.into(),
             target.name.clone(),
             first_us,
+            first_attempts,
         ));
         ctx.writer.record(&Record::ProcessStart {
             build: build.label.clone(),
             scope: scope.into(),
             scenario: target.name.clone(),
             pid: jk.pid(),
+            startup_ms: startup.map(|s| s.ready_ms),
+            startup_saw_window: startup.map(|s| s.saw_window),
             spawn_to_first_visible_ms: Some(jk.since_spawn_ms(first_visible_qpc)),
             first_press_visible_us: Some(first_us),
+            first_press_attempts: Some(first_attempts),
             after: jk.proc.snapshot(),
         })?;
 
@@ -1029,8 +1087,25 @@ fn print_table(ctx: &Ctx) {
     }
     if !ctx.first_presses.is_empty() {
         println!("\nfirst press after start (one-time costs; not in the table above):");
-        for (build, scope, scen, us) in &ctx.first_presses {
-            println!("  [{build}] {scope} / {scen}: {:.1} ms", ms(*us));
+        for (build, scope, scen, us, tries) in &ctx.first_presses {
+            // A retried first press isn't cold any more (the target had
+            // time to finish starting): mark it so it isn't compared
+            // with the others.
+            let note = if *tries > 1 {
+                format!("  (try {tries}: not comparable, earlier tries showed nothing)")
+            } else {
+                String::new()
+            };
+            println!("  [{build}] {scope} / {scen}: {:.1} ms{note}", ms(*us));
+        }
+    }
+    if !ctx.slow_startups.is_empty() {
+        println!(
+            "\nslow jumpkey startups (> {:.1} s; normal is ~2.9 s):",
+            SLOW_STARTUP_MS / 1000.0
+        );
+        for (build, scope, scen, ready_ms) in &ctx.slow_startups {
+            println!("  [{build}] {scope} / {scen}: {:.1} s", ready_ms / 1000.0);
         }
     }
 }

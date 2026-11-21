@@ -57,10 +57,22 @@ pub enum Record {
         scope: String,
         scenario: String,
         pid: u32,
-        /// Spawn → first overlay visible (includes the splash screen).
+        /// Spawn → ready for the first press (splash shown and closed).
+        /// `None` with `--press-during-startup`.
+        startup_ms: Option<f64>,
+        /// Whether a startup window (the splash) was seen. `false` means
+        /// pick-bench waited the full no-window timeout.
+        startup_saw_window: Option<bool>,
+        /// Spawn → first overlay visible (includes the splash screen, and
+        /// any failed first-press tries; see `first_press_attempts`).
         spawn_to_first_visible_ms: Option<f64>,
-        /// The first press after start: cold overlay creation etc.
+        /// The first press after start: cold overlay creation etc. When
+        /// `first_press_attempts > 1` this is the successful later try,
+        /// not a cold press.
         first_press_visible_us: Option<u64>,
+        /// Presses needed before the first overlay appeared (a target
+        /// still starting up can make jumpkey find nothing).
+        first_press_attempts: Option<u32>,
         after: ProcSnapshot,
     },
     /// Background cost with nobody pressing anything.
