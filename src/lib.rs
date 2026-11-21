@@ -27,6 +27,7 @@ pub mod hint;
 pub mod keyboard;
 pub mod layout_order;
 pub mod model;
+pub mod telemetry;
 
 #[cfg(windows)]
 pub mod windows;

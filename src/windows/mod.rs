@@ -59,6 +59,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::cache::{CacheManager, WindowKey};
 use crate::config::ScopeMode;
 use crate::layout_order::{union_center, HintOrder};
+use crate::{tel_current, tel_record, tel_record_current, tel_span};
 use crate::{Action, Backend, Bounds, Element, ElementId, Role};
 
 /// Maximum tree depth we descend into for *desktop* apps. Native Win32 /
@@ -337,11 +338,23 @@ impl WindowsBackend {
         mode: ScopeMode,
         ctx: &PickContext,
     ) -> anyhow::Result<Vec<Element>> {
-        match mode {
+        let span = tel_span!(
+            "enumerate",
+            cache = tracing::field::Empty,
+            collected = tracing::field::Empty
+        )
+        .entered();
+        let result = match mode {
             ScopeMode::ActiveWindow => self.enumerate_foreground(),
             ScopeMode::ActiveMonitor => self.enumerate_active_monitor(ctx),
             ScopeMode::AllWindows => self.enumerate_windows_filtered(ctx.foreground, |_| true),
-        }
+        };
+        tel_record!(
+            span,
+            "collected",
+            result.as_ref().map_or(0, |e| e.len()) as u64
+        );
+        result
     }
 
     fn enumerate_active_monitor(&mut self, ctx: &PickContext) -> anyhow::Result<Vec<Element>> {
@@ -391,8 +404,15 @@ impl WindowsBackend {
     {
         use std::collections::BTreeMap;
 
+        let list_span = tel_span!(
+            "list_windows",
+            candidates = tracing::field::Empty,
+            planned = tracing::field::Empty
+        )
+        .entered();
         let candidates = crate::windows::window_picker::enumerate_visible()
             .context("listing top-level windows for multi-window scope")?;
+        tel_record!(list_span, "candidates", candidates.len() as u64);
         let cap = self.max_elements_global;
 
         // Decide which windows to walk and which higher-z windows sit on
@@ -410,6 +430,12 @@ impl WindowsBackend {
             }
             by_pid.entry(pid).or_default().push(planned);
         }
+        tel_record!(
+            list_span,
+            "planned",
+            by_pid.values().map(Vec::len).sum::<usize>() as u64
+        );
+        drop(list_span);
 
         // Walk the foreground pid group locally (sequentially through
         // `enumerate_window`, which goes through the cache and binds
@@ -463,9 +489,20 @@ impl WindowsBackend {
         if !by_pid.is_empty() && out.len() < cap {
             use rayon::prelude::*;
             let groups: Vec<(u32, Vec<PlannedWindow>)> = by_pid.into_iter().collect();
+            let _par = tel_span!("parallel_walks", groups = groups.len() as u64).entered();
+            // Rayon workers don't inherit this thread's current span, so
+            // their spans get it as an explicit parent (telemetry).
+            let parent = tel_current!();
             let walked: Vec<Vec<SendWalkRecord>> = groups
                 .into_par_iter()
                 .map(|(pid, windows)| {
+                    let _worker = tel_span!(
+                        parent: &parent,
+                        "worker",
+                        pid,
+                        windows = windows.len() as u64
+                    )
+                    .entered();
                     let automation = match UIAutomation::new() {
                         Ok(a) => a,
                         Err(e) => {
@@ -588,6 +625,7 @@ impl WindowsBackend {
     /// in the same order. Centralized so the foreground-,
     /// single-window-, and multi-window-merge paths can't drift.
     fn register_records(&mut self, records: Vec<WalkRecord>) -> Vec<Element> {
+        let _span = tel_span!("register", n = records.len() as u64).entered();
         let mut out = Vec::with_capacity(records.len());
         for rec in records {
             let id = ElementId(self.next_id);
@@ -1060,15 +1098,18 @@ impl Backend for WindowsBackend {
         // otherwise [`Self::perform`] would fail with "unknown element
         // id" when the user picks.
         let key = hwnd_to_key(hwnd);
+        tel_record_current!("cache", "miss");
         if let Some(cached) = self.cache.lock().get(key) {
             let all_known = cached.iter().all(|e| self.elements.contains_key(&e.id));
             if all_known {
+                tel_record_current!("cache", "hit");
                 tracing::debug!(
                     cached = cached.len(),
                     "enumerate_foreground served from cache"
                 );
                 return Ok(cached.as_ref().to_vec());
             }
+            tel_record_current!("cache", "hit_rejected");
             tracing::debug!(
                 cached = cached.len(),
                 "cache hit but IDs not registered locally; rewalking to bind UIElements"
@@ -1132,6 +1173,7 @@ impl Backend for WindowsBackend {
             // for legacy controls that don't expose any pattern.
             Action::Invoke => {
                 let path = invoke_smart(el).context("invoking element failed")?;
+                tel_record_current!("invoke_path", tracing::field::debug(path));
                 if path == InvokePath::MouseFallback {
                     tracing::warn!(?id, "no UIA pattern matched; used mouse-click fallback");
                 } else {
@@ -1391,16 +1433,39 @@ pub(crate) fn walk_window(
     hwnd: HWND,
     is_browser: bool,
 ) -> anyhow::Result<Vec<WalkRecord>> {
+    let walk = tel_span!(
+        "walk",
+        kind = if is_browser { "browser" } else { "desktop" },
+        // SAFETY: no preconditions.
+        foreground = unsafe { GetForegroundWindow() } == hwnd,
+        process.executable.name = tracing::field::Empty,
+        visited = tracing::field::Empty,
+        pre_dedup = tracing::field::Empty,
+        collected = tracing::field::Empty,
+        max_depth = tracing::field::Empty,
+        hit_depth_cap = tracing::field::Empty,
+        hit_element_cap = tracing::field::Empty
+    )
+    .entered();
+    #[cfg(feature = "telemetry")]
+    if let Some(exe) = window_exe_basename(hwnd) {
+        tel_record!(walk, "process.executable.name", exe.as_str());
+    }
     if is_browser {
+        let _s = tel_span!("activate").entered();
         activate_browser_accessibility(hwnd);
     }
     let handle = Handle::from(hwnd.0 as isize);
-    let root = automation
-        .element_from_handle_build_cache(handle, cache_request)
-        .context("element_from_handle_build_cache failed")?;
+    let root = {
+        let _s = tel_span!("root").entered();
+        automation
+            .element_from_handle_build_cache(handle, cache_request)
+            .context("element_from_handle_build_cache failed")?
+    };
 
     let mut out = Vec::with_capacity(64);
     let mut stats = WalkStats::default();
+    let search = tel_span!("search").entered();
     if is_browser {
         let walker = automation
             .get_control_view_walker()
@@ -1421,9 +1486,19 @@ pub(crate) fn walk_window(
     // expose both an outer ListItem/Group and the inner Button/Hyperlink
     // it wraps; without this pass the user sees stacked badges fighting
     // for the same screen real estate.
+    drop(search);
     let pre_dedup = out.len();
-    let out = dedup_nested_records(out);
+    let out = {
+        let _s = tel_span!("dedup").entered();
+        dedup_nested_records(out)
+    };
     let post_dedup = out.len();
+    tel_record!(walk, "visited", stats.visited as u64);
+    tel_record!(walk, "pre_dedup", pre_dedup as u64);
+    tel_record!(walk, "collected", post_dedup as u64);
+    tel_record!(walk, "max_depth", stats.max_depth as u64);
+    tel_record!(walk, "hit_depth_cap", stats.hit_depth_cap);
+    tel_record!(walk, "hit_element_cap", stats.hit_element_cap);
     if tracing::enabled!(tracing::Level::DEBUG) {
         tracing::debug!(
             collected = post_dedup,
@@ -1916,6 +1991,25 @@ fn map_role(ct: ControlType) -> Option<Role> {
 ///    are explicitly *not* browsers for our purposes; their chrome is
 ///    native and the web-strict filter would over-prune their controls.
 fn is_browser_window(hwnd: HWND) -> bool {
+    let Some(basename) = window_exe_basename(hwnd) else {
+        return false;
+    };
+    matches!(
+        basename.as_str(),
+        "chrome.exe"
+            | "msedge.exe"
+            | "firefox.exe"
+            | "brave.exe"
+            | "opera.exe"
+            | "vivaldi.exe"
+            | "iexplore.exe"
+            | "arc.exe"
+    )
+}
+
+/// Lowercased file name of the exe owning `hwnd` (`vivaldi.exe`), or
+/// `None` if the process can't be queried.
+fn window_exe_basename(hwnd: HWND) -> Option<String> {
     let mut process_id: u32 = 0;
     // SAFETY: `GetWindowThreadProcessId` writes through `&mut process_id`
     // and tolerates a null `hwnd` (returns 0). We guarantee `process_id`
@@ -1924,14 +2018,11 @@ fn is_browser_window(hwnd: HWND) -> bool {
         let _ = GetWindowThreadProcessId(hwnd, Some(&mut process_id as *mut u32));
     }
     if process_id == 0 {
-        return false;
+        return None;
     }
 
     let exe_path = unsafe {
-        let h_process = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) {
-            Ok(h) => h,
-            Err(_) => return false,
-        };
+        let h_process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id).ok()?;
         let mut buf = vec![0u16; 1024];
         let mut size: u32 = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(
@@ -1942,25 +2033,15 @@ fn is_browser_window(hwnd: HWND) -> bool {
         );
         let _ = CloseHandle(h_process);
         if ok.is_err() || size == 0 {
-            return false;
+            return None;
         }
         String::from_utf16_lossy(&buf[..size as usize]).to_lowercase()
     };
 
-    // Match on the basename only — full paths add noise (e.g. `chrome` is
+    // Basename only — full paths add noise (e.g. `chrome` is
     // legitimately part of `\chrome\` directories for non-browser apps).
     let basename = exe_path.rsplit(['\\', '/']).next().unwrap_or(&exe_path);
-    matches!(
-        basename,
-        "chrome.exe"
-            | "msedge.exe"
-            | "firefox.exe"
-            | "brave.exe"
-            | "opera.exe"
-            | "vivaldi.exe"
-            | "iexplore.exe"
-            | "arc.exe"
-    )
+    Some(basename.to_string())
 }
 
 /// MSAA object id for the UI Automation root, returned by Chromium's

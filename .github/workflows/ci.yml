@@ -36,6 +36,13 @@ jobs:
       - name: cargo test
         run: cargo test
 
+      # In-app timing (`telemetry` feature, off by default). Its code is
+      # compiled out of the steps above, so check it separately.
+      - name: telemetry feature clippy + test
+        run: |
+          cargo clippy --all-targets --features telemetry
+          cargo test --features telemetry
+
       # Benchmark harness (tools/pick-bench). Built and unit-tested here;
       # it can't drive a real desktop on CI runners.
       - name: pick-bench clippy + test

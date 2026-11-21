@@ -13,6 +13,12 @@ to run it), kept so changes can be compared against them.
 Raw results in `bench/results/` are git-ignored; copy anything worth
 keeping here.
 
+To see *where* the time goes inside jumpkey, and how the picker is used
+day to day, run a build with the `telemetry` feature
+(`cargo script run-telemetry`, see `docs/TELEMETRY.md`). Its records
+(`%LOCALAPPDATA%\jumpkey\telemetry\`) carry `start_qpc`, which lines
+up with the harness's QPC timestamps.
+
 When adding a log entry, include: date, app commit, harness command,
 machine/power state, window size/DPI, then a table of p50 / p95 / CPU,
 and a short "what this shows". Note anything that makes the run not

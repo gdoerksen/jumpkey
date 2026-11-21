@@ -998,6 +998,7 @@ impl OverlayState {
         }
         if vk == VK_BACK.0 as u32 {
             self.typed.pop();
+            crate::telemetry::note_backspace();
             return;
         }
         // Translate through the active keyboard layout so any key in the
@@ -1020,6 +1021,7 @@ impl OverlayState {
         let ch = ch.filter(|c| in_labels(*c) || c.is_alphabetic());
         if let Some(ch) = ch {
             self.typed.push(ch);
+            crate::telemetry::note_key();
 
             if let Some(idx) = self.laid.iter().position(|h| h.label == self.typed) {
                 // Sample modifiers *only* on the completing keystroke.
@@ -1847,6 +1849,7 @@ pub fn pick_hint(hints: Vec<Hint>, style: HintStyle) -> Result<Option<PickResult
     PERSISTENT_OVERLAY.with(|cell| {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
+            let _s = crate::tel_span!("overlay_create").entered();
             *slot = Some(unsafe { PersistentOverlay::new()? });
         }
         let overlay = slot.as_mut().expect("just initialized");
@@ -1994,7 +1997,10 @@ impl PersistentOverlay {
             }
         }
 
-        let mut state = OverlayState::new(hints, style, vx, vy, &mut self.text);
+        let mut state = {
+            let _s = crate::tel_span!("overlay_state", n = hints.len() as u64).entered();
+            OverlayState::new(hints, style, vx, vy, &mut self.text)
+        };
 
         // Bind the state pointer to the persistent HWND so wnd_proc can
         // route key events into it. We clear the pointer before
@@ -2010,10 +2016,19 @@ impl PersistentOverlay {
         // the previously focused app visually unchanged underneath the
         // overlay; we still SetForegroundWindow + SetFocus so key
         // events route to us.
-        state.render_to_dib(self.hwnd, self.mem_dc, self.bits, self.width, self.height);
-        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-        let _ = SetForegroundWindow(self.hwnd);
-        let _ = SetFocus(self.hwnd);
+        {
+            let _s = crate::tel_span!("render").entered();
+            state.render_to_dib(self.hwnd, self.mem_dc, self.bits, self.width, self.height);
+        }
+        // Pixels handed to DWM (UpdateLayeredWindow) but not yet shown.
+        crate::tel_event!("first_ulw");
+        {
+            let _s = crate::tel_span!("show_focus").entered();
+            let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+            let _ = SetForegroundWindow(self.hwnd);
+            let _ = SetFocus(self.hwnd);
+        }
+        crate::tel_event!("shown");
 
         // Install a low-level mouse hook to detect scroll events.
         // Windows 10+'s "scroll inactive windows" routes WM_MOUSEWHEEL
@@ -2048,6 +2063,7 @@ impl PersistentOverlay {
                 last_typed_len = state.typed.len();
             }
         }
+        crate::tel_event!("key_complete");
 
         // Tear down the scroll hook before anything else so a stray
         // WM_SCROLL_DISMISS can't arrive after we've snapshotted the
