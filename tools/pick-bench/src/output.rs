@@ -57,6 +57,12 @@ pub enum Record {
         scope: String,
         scenario: String,
         pid: u32,
+        /// Spawn → ready for the first press (splash shown and closed).
+        /// `None` with `--press-during-startup`.
+        startup_ms: Option<f64>,
+        /// Whether a startup window (the splash) was seen. `false` means
+        /// pick-bench waited the full no-window timeout.
+        startup_saw_window: Option<bool>,
         /// Spawn → first overlay visible (includes the splash screen).
         spawn_to_first_visible_ms: Option<f64>,
         /// The first press after start: cold overlay creation etc.

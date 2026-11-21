@@ -37,6 +37,15 @@ baseline.**
 (Label counts from jumpkey's log, matched to scenarios by jumpkey
 restarts, which happen once per scenario.)
 
+**Correction (found later the same day):** in the first two scenarios
+(dense-list, long-feed) jumpkey took ~4 s before its splash appeared.
+pick-bench only waited 3 s for a window, so it pressed the hotkey before
+jumpkey had registered it and timed the splash instead. Their "first
+press after start" values (2033, 2274) are not real; the other rows are
+unaffected (no stall in jumpkey's log), and the per-press columns are
+fine. pick-bench now waits up to 15 s for the splash and records
+`startup_ms`.
+
 **Target CPU method fixed after this run:** the harness summed the
 window process's whole tree. For Explorer that's the shell (69
 processes: the real Vivaldi, Claude, shells, tray apps); for VS Code and

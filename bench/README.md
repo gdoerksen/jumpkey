@@ -52,6 +52,7 @@ intervals for A/B, budgets) comes with `scripts/telemetry_summary.py`.
 | `between_*` | Since the previous overlay closed: window switching, dwell time, and what jumpkey did in the background meanwhile (cache warming). |
 | `after.*` | jumpkey private bytes, working set, handles, GDI/USER objects after each press. |
 | `idle` record | jumpkey CPU over `--idle-secs` with nobody pressing anything. |
+| `process_start.startup_ms` | Spawn → ready for the first press (splash closed). Slow starts (> 5 s) are also printed. |
 | `process_start.first_press_visible_us` | The first press after jumpkey starts: one-time costs (creating the overlay). Kept out of the main stats. |
 
 Esc dismisses every overlay, so the harness never measures `perform`
@@ -151,6 +152,10 @@ Changing one means updating pick-bench in the same PR:
    for the compositor after showing the overlay, to time "pixels on
    screen". Other builds ignore both.
 
-Also assumed: the first press after start may be delayed by the splash
-screen (pick-bench waits up to 20 s for it), and a second jumpkey exits
-right away when one is already running.
+Also assumed: jumpkey shows a window (the splash) while it starts and
+takes hotkeys once that's gone. pick-bench waits for a window to appear
+and then for none to be visible for 400 ms (up to 20 s). If no window
+appears within 15 s it assumes a build without a splash and goes ahead.
+(Jumpkey sometimes takes 3–5 s before its splash appears; an earlier 3 s
+limit pressed the hotkey before it was registered.) A second jumpkey
+exits right away when one is already running.

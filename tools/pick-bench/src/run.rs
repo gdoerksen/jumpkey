@@ -419,16 +419,31 @@ fn run_block(
     let result = (|| -> Result<()> {
         // Warm-up / readiness: the first press after start. Recorded on
         // its own because it pays one-time costs.
-        if ctx.opts.press_during_startup {
+        let startup = if ctx.opts.press_during_startup {
             // First press lands while jumpkey is still starting up; the
             // timeout below then covers the whole startup.
             window::focus(target.hwnd)?;
             pump_sleep(Duration::from_millis(200));
+            None
         } else {
-            jk.wait_startup(STARTUP_TIMEOUT)?;
+            let s = jk.wait_startup(STARTUP_TIMEOUT)?;
+            if s.ready_ms > 5_000.0 || !s.saw_window {
+                println!(
+                    "   note: jumpkey took {:.1} s to start{}",
+                    s.ready_ms / 1000.0,
+                    if s.saw_window {
+                        ""
+                    } else {
+                        " (no splash seen)"
+                    }
+                );
+            }
+            // The splash may have taken the foreground: focus the target
+            // again right before the first press.
             window::focus(target.hwnd)?;
             pump_sleep(Duration::from_millis(500));
-        }
+            Some(s)
+        };
         let first = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
         let Some(first_visible_qpc) = first.visible_qpc else {
             bail!(
@@ -449,6 +464,8 @@ fn run_block(
             scope: scope.into(),
             scenario: target.name.clone(),
             pid: jk.pid(),
+            startup_ms: startup.map(|s| s.ready_ms),
+            startup_saw_window: startup.map(|s| s.saw_window),
             spawn_to_first_visible_ms: Some(jk.since_spawn_ms(first_visible_qpc)),
             first_press_visible_us: Some(first_us),
             after: jk.proc.snapshot(),

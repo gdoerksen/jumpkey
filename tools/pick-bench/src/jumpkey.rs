@@ -47,6 +47,15 @@ impl Sandbox {
     }
 }
 
+/// How jumpkey's startup went (see [`Jumpkey::wait_startup`]).
+#[derive(Debug, Clone, Copy)]
+pub struct Startup {
+    /// Spawn → ready to take a hotkey (splash closed and quiet).
+    pub ready_ms: f64,
+    /// Whether a window (the splash) was seen during startup.
+    pub saw_window: bool,
+}
+
 pub struct Jumpkey {
     exe: PathBuf,
     child: Child,
@@ -95,18 +104,24 @@ impl Jumpkey {
         })
     }
 
-    /// Wait until jumpkey has finished starting.
+    /// Wait until jumpkey has finished starting. Returns what happened,
+    /// for the `process_start` record.
     ///
     /// Today a splash screen is up for ~2.5 s, and a hotkey pressed
     /// while it shows is only handled once the splash closes. So: once a
     /// jumpkey window has been seen, wait until none has been visible
     /// for `QUIET`. If no window appears at all, assume a build without a
-    /// splash and go ahead after `NO_WINDOW` (the splash normally shows
-    /// within milliseconds of start, so this only waits on such builds).
-    /// No particular window is assumed, so this survives UI changes.
-    pub fn wait_startup(&mut self, timeout: Duration) -> Result<()> {
+    /// splash and go ahead after `NO_WINDOW`. No particular window is
+    /// assumed, so this survives UI changes.
+    ///
+    /// `NO_WINDOW` is long on purpose: the splash usually shows within
+    /// milliseconds, but sometimes jumpkey takes 3–5 s before it does
+    /// (seen while a freshly started browser was busy). A shorter wait
+    /// pressed the hotkey before jumpkey had registered it: the press
+    /// was lost and the splash appearing later was timed as the overlay.
+    pub fn wait_startup(&mut self, timeout: Duration) -> Result<Startup> {
         const MIN_STARTUP: Duration = Duration::from_millis(1000);
-        const NO_WINDOW: Duration = Duration::from_millis(3000);
+        const NO_WINDOW: Duration = Duration::from_millis(15_000);
         const QUIET: Duration = Duration::from_millis(400);
         let pid = self.pid();
         let start = self.spawned_qpc;
@@ -137,7 +152,10 @@ impl Jumpkey {
             );
         }
         crate::win::events::clear();
-        Ok(())
+        Ok(Startup {
+            ready_ms: qpc_delta_us(start, qpc()) as f64 / 1000.0,
+            saw_window: seen_window,
+        })
     }
 
     pub fn pid(&self) -> u32 {
