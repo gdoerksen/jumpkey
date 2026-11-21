@@ -311,6 +311,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     // Keep the splash visible for at least 2.5s so the user actually sees
     // the brand mark on fast machines where init completes in <100ms.
     // Pump messages while we wait so the splash stays painted.
+    let mut reload_pending = false;
     if splash.is_some() {
         const MIN_SPLASH_MS: u128 = 2500;
         let elapsed = splash_shown_at.elapsed().as_millis();
@@ -326,6 +327,12 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
             while std::time::Instant::now() < deadline {
                 unsafe {
                     while PM(&mut m, None, 0, 0, PMR).as_bool() {
+                        // Dispatching a NULL-hwnd thread message drops it, so
+                        // remember a config reload and replay it below.
+                        if m.hwnd.0.is_null() && m.message == WM_USER_RELOAD_CONFIG {
+                            reload_pending = true;
+                            continue;
+                        }
                         let _ = TM(&m);
                         DM(&m);
                     }
@@ -335,6 +342,29 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         }
     }
     drop(splash);
+
+    // The splash loop above dispatched any WM_HOTKEY / tray messages that
+    // arrived meanwhile, so their actions are already queued on the crates'
+    // channels — but the main loop only polls those after `GetMessageW`
+    // returns. Post a no-op thread message so it wakes immediately and
+    // drains them, instead of waiting for some unrelated message. A config
+    // reload swallowed by the splash loop is replayed first (its branch
+    // `continue`s before polling, hence the WM_NULL after it).
+    {
+        use ::windows::Win32::Foundation::{LPARAM, WPARAM};
+        use ::windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_NULL};
+        let wake = |message: u32| {
+            if let Err(e) =
+                unsafe { PostThreadMessageW(main_thread_id, message, WPARAM(0), LPARAM(0)) }
+            {
+                tracing::debug!(error = ?e, message, "failed to post post-splash wake message");
+            }
+        };
+        if reload_pending {
+            wake(WM_USER_RELOAD_CONFIG);
+        }
+        wake(WM_NULL);
+    }
 
     let mut runtime = Runtime {
         hint_engine,
