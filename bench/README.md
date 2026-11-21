@@ -58,6 +58,7 @@ intervals for A/B, budgets) comes with `scripts/telemetry_summary.py`.
 | `idle` record | jumpkey CPU over `--idle-secs` with nobody pressing anything. |
 | `process_start.startup_ms` | Spawn → ready for the first press (splash closed). Slow starts (> 5 s) are also printed. |
 | `process_start.first_press_visible_us` | The first press after jumpkey starts: one-time costs (creating the overlay). Kept out of the main stats. |
+| `process_start.first_press_attempts` | Presses needed before the first overlay appeared (up to 3, 3 s apart; a just-opened page can make jumpkey find nothing). Above 1, the first-press value is from a later try and isn't cold; the printed summary marks it. |
 
 Esc dismisses every overlay, so the harness never measures `perform`
 (acting on an element). The in-app telemetry covers that.

@@ -42,11 +42,26 @@ hits" = repeat presses under 30 ms (for Terminal a full search is barely
 slower, so its split is approximate). jumpkey private bytes 75–85 MB.
 Idle CPU in the 10 s after start: 2.5 % of one core.
 
-First press after start: Chromium pages 1.1–1.8 s on the first of the
-three starts per scenario (fresh page), ~0.75–1.5 s afterwards; desktop
-apps 60–180 ms. Startup (spawn → splash closed) 2.93 s, once 4.7 s; one
-first press needed a retry (nested-menu: the freshly opened browser
-answered the first search with nothing).
+First press after start (ms, the three jumpkey starts per scenario):
+
+| Scenario | 1st start | 2nd | 3rd |
+|---|---|---|---|
+| long-feed | 1774 | 1422 | 1489 |
+| form | 1224 | 121 | 114 |
+| tabs | 1133 | 116 | 115 |
+| dense-list | 923 | 764 | 757 |
+| edge-dense-list | 852 | 849 | 852 |
+| nested-menu | 118 (2nd try) | 109 | 113 |
+| explorer-folder | 175 | 181 | 178 |
+| vscode-repo | 119 | 99 | 106 |
+| terminal-split | 68 | 70 | 63 |
+
+On small Vivaldi pages the first press on a freshly opened page costs
+~1.1–1.2 s (Chromium building its accessibility tree), later starts
+~0.1 s. On the big pages the first press is within ~1.5× of a normal
+press. nested-menu's first try showed nothing (see below); its 118 ms is
+the second try, after the page had warmed up, so it isn't a cold value.
+Startup (spawn → splash closed) 2.93 s, once 4.7 s.
 
 In-app telemetry from the same day (PR #26, dense-list, 10 presses): 98 %
 of a press is the browser walk's tree search (~930 ms, 2,111 nodes
@@ -74,6 +89,15 @@ labels and sort < 0.2 ms.
   freshly launched browser is busy (4 of the last 5 runs had at least
   one). Not investigated; something in startup before the splash is
   shown waits on other processes.
+- **Open issue, user-visible: a press right after opening a page can
+  show nothing.** nested-menu's first press found no elements on the
+  freshly opened Vivaldi page (jumpkey logs "no interactable elements"),
+  so no overlay appeared; the same happened in two runs before the
+  harness retried. Likely the browser was still busy and the 50 ms
+  accessibility activation timed out. pick-bench now retries and records
+  `first_press_attempts`, so this stays visible in the data but isn't in
+  the main numbers. Both this and the startup stall are worth fixing in
+  jumpkey.
 
 ---
 

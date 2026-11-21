@@ -212,7 +212,6 @@ impl Pattern {
         })
     }
 
-    /// The patterns run by `--all`.
     /// `--preset baseline`: the patterns that matter for the planned
     /// cache/walk refactors, in ~30 minutes. 300 ms races the
     /// cache-warming walk after a window switch, 2000 ms is a cold
@@ -226,6 +225,7 @@ impl Pattern {
         ]
     }
 
+    /// The patterns run by `--all`.
     pub fn standard_set() -> Vec<Self> {
         vec![
             Self::SwitchThenPress { dwell_ms: 0 },

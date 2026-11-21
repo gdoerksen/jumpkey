@@ -47,8 +47,8 @@ WHAT TO RUN:
                             (3-4 hours)
     --preset baseline       The baseline to compare refactors against (~30 min): every
                             scenario x switch-then-press:300/2000 + repeat-press:300 x
-                            active_window, 30 presses each. --pattern / --scope /
-                            --iterations still override.
+                            active_window, 30 presses each. --scenario / --pattern /
+                            --scope / --iterations still narrow or override it.
     --pattern <p>           switch-then-press:<ms> | repeat-press:<ms> (repeatable;
                             default switch-then-press:2000)
     --scope <s>             active_window | active_monitor | all_windows (repeatable;
@@ -123,10 +123,7 @@ pub fn parse() -> Result<Option<Options>> {
             "--scenario" => o.scenarios.push(val()?),
             "--all" => o.all_scenarios = true,
             "--preset" => match val()?.as_str() {
-                "baseline" => {
-                    o.all_scenarios = true;
-                    o.baseline = true;
-                }
+                "baseline" => o.baseline = true,
                 other => bail!("unknown preset `{other}` (known: baseline)"),
             },
             "--pattern" => o.patterns.push(Pattern::parse(&val()?)?),
@@ -176,6 +173,16 @@ pub fn parse() -> Result<Option<Options>> {
     }
     if o.iterations == 0 || o.block_size == 0 {
         bail!("--iterations and --block-size must be at least 1");
+    }
+    if o.baseline && o.all_scenarios {
+        bail!("--preset baseline and --all are different matrices; pick one");
+    }
+    if o.baseline && o.manual {
+        bail!("--manual can't be combined with --preset");
+    }
+    // The preset runs every scenario unless --scenario narrows it.
+    if o.baseline && o.scenarios.is_empty() {
+        o.all_scenarios = true;
     }
     if o.manual && (o.all_scenarios || !o.scenarios.is_empty()) {
         bail!("--manual can't be combined with --scenario / --all");
