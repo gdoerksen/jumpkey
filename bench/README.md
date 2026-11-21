@@ -23,8 +23,12 @@ cargo build --release -p pick-bench
 #    each 2 s after switching to the window.
 target\release\pick-bench.exe --scenario dense-list
 
-# Whole matrix: every scenario x 4 timing patterns x 2 scopes.
-target\release\pick-bench.exe --all --label baseline
+# Baseline to compare refactors against (~30 min): every scenario x
+# switch-then-press:300/2000 + repeat-press:300 x active_window.
+target\release\pick-bench.exe --preset baseline
+
+# Whole matrix: every scenario x 5 timing patterns x 2 scopes (3-4 h).
+target\release\pick-bench.exe --all --label full
 
 # Compare two builds, alternating in blocks of 5 (A/B).
 target\release\pick-bench.exe --scenario dense-list --exe-a base.exe --exe-b new.exe
@@ -74,7 +78,10 @@ mean the same thing after a refactor:
   closed, without switching ("Esc, retry"). Today this is the only case
   the 500 ms cache helps.
 
-`--all` runs 0, 300, 2000 and 10000 ms plus `repeat-press:300`. These
+`--all` runs 0, 300, 2000 and 10000 ms plus `repeat-press:300`;
+`--preset baseline` runs 300 and 2000 ms plus `repeat-press:300`, in the
+active-window scope only (the multi-window scopes depend on whatever
+else is open on the desktop, so they don't make a repeatable baseline). These
 waits are educated guesses. Once the in-app telemetry records the time
 from switching windows to pressing the hotkey in daily use, set them
 from that.

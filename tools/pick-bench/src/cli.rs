@@ -14,6 +14,8 @@ pub struct Options {
     pub builds: Vec<(String, PathBuf)>,
     pub scenarios: Vec<String>,
     pub all_scenarios: bool,
+    /// `--preset baseline`: see [`Pattern::baseline_set`].
+    pub baseline: bool,
     pub patterns: Vec<Pattern>,
     pub scopes: Vec<String>,
     pub iterations: usize,
@@ -42,6 +44,11 @@ USAGE:
 WHAT TO RUN:
     --scenario <name>       Scenario from bench/scenarios.toml (repeatable)
     --all                   Every scenario x standard patterns x active_window + all_windows
+                            (3-4 hours)
+    --preset baseline       The baseline to compare refactors against (~30 min): every
+                            scenario x switch-then-press:300/2000 + repeat-press:300 x
+                            active_window, 30 presses each. --pattern / --scope /
+                            --iterations still override.
     --pattern <p>           switch-then-press:<ms> | repeat-press:<ms> (repeatable;
                             default switch-then-press:2000)
     --scope <s>             active_window | active_monitor | all_windows (repeatable;
@@ -83,6 +90,7 @@ pub fn parse() -> Result<Option<Options>> {
         builds: Vec::new(),
         scenarios: Vec::new(),
         all_scenarios: false,
+        baseline: false,
         patterns: Vec::new(),
         scopes: Vec::new(),
         iterations: 30,
@@ -114,6 +122,13 @@ pub fn parse() -> Result<Option<Options>> {
             }
             "--scenario" => o.scenarios.push(val()?),
             "--all" => o.all_scenarios = true,
+            "--preset" => match val()?.as_str() {
+                "baseline" => {
+                    o.all_scenarios = true;
+                    o.baseline = true;
+                }
+                other => bail!("unknown preset `{other}` (known: baseline)"),
+            },
             "--pattern" => o.patterns.push(Pattern::parse(&val()?)?),
             "--scope" => {
                 let s = val()?;
@@ -168,15 +183,20 @@ pub fn parse() -> Result<Option<Options>> {
     if !o.manual && !o.all_scenarios && o.scenarios.is_empty() {
         bail!("nothing to run: pass --scenario <name>, --all or --manual (see --help)");
     }
+    if o.baseline && o.label.is_none() {
+        o.label = Some("baseline".into());
+    }
     if o.patterns.is_empty() {
-        o.patterns = if o.all_scenarios {
+        o.patterns = if o.baseline {
+            Pattern::baseline_set()
+        } else if o.all_scenarios {
             Pattern::standard_set()
         } else {
             vec![Pattern::SwitchThenPress { dwell_ms: 2000 }]
         };
     }
     if o.scopes.is_empty() {
-        o.scopes = if o.all_scenarios {
+        o.scopes = if o.all_scenarios && !o.baseline {
             vec!["active_window".into(), "all_windows".into()]
         } else {
             vec!["active_window".into()]
