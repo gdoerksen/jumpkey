@@ -67,6 +67,9 @@ pub enum Record {
         spawn_to_first_visible_ms: Option<f64>,
         /// The first press after start: cold overlay creation etc.
         first_press_visible_us: Option<u64>,
+        /// Presses needed before the first overlay appeared (a target
+        /// still starting up can make jumpkey find nothing).
+        first_press_attempts: Option<u32>,
         after: ProcSnapshot,
     },
     /// Background cost with nobody pressing anything.

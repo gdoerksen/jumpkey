@@ -34,6 +34,10 @@ const HIDE_TIMEOUT: Duration = Duration::from_secs(5);
 const LATE_SHOW_GRACE: Duration = Duration::from_secs(10);
 /// The first press after start pays one-time costs; allow more time.
 const FIRST_PRESS_TIMEOUT: Duration = Duration::from_secs(20);
+/// Tries for the first press before the run is abandoned.
+const FIRST_PRESS_ATTEMPTS: u32 = 3;
+/// Wait between first-press tries, for the target to finish starting.
+const FIRST_PRESS_RETRY_WAIT: Duration = Duration::from_secs(3);
 /// Upper bound for jumpkey's startup (splash screen etc.).
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Time to look away (neutral window focused) in switch-then-press.
@@ -444,13 +448,30 @@ fn run_block(
             pump_sleep(Duration::from_millis(500));
             Some(s)
         };
-        let first = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
-        let Some(first_visible_qpc) = first.visible_qpc else {
-            bail!(
-                "jumpkey never showed an overlay after the hotkey ({}). Check the hotkey matches \
-                 the config template, and that the target window has clickable elements.",
-                chord.text
-            );
+        // A freshly started target (a browser building its accessibility
+        // tree) can answer jumpkey's first search with nothing, and
+        // jumpkey then shows no overlay. Retry a few times before giving
+        // up on the run; the attempts are recorded.
+        let mut first_attempts = 0;
+        let (first, first_visible_qpc) = loop {
+            first_attempts += 1;
+            let press = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
+            if let Some(v) = press.visible_qpc {
+                break (press, v);
+            }
+            if first_attempts >= FIRST_PRESS_ATTEMPTS {
+                bail!(
+                    "jumpkey never showed an overlay after the hotkey ({}), {} tries. Check the \
+                     hotkey matches the config template, and that the target window has \
+                     clickable elements.",
+                    chord.text,
+                    first_attempts
+                );
+            }
+            println!("   note: no overlay on first press (try {first_attempts}); retrying");
+            pump_sleep(FIRST_PRESS_RETRY_WAIT);
+            window::focus(target.hwnd)?;
+            pump_sleep(Duration::from_millis(500));
         };
         let first_us = qpc_delta_us(first.sent_qpc, first_visible_qpc);
         ctx.first_presses.push((
@@ -468,6 +489,7 @@ fn run_block(
             startup_saw_window: startup.map(|s| s.saw_window),
             spawn_to_first_visible_ms: Some(jk.since_spawn_ms(first_visible_qpc)),
             first_press_visible_us: Some(first_us),
+            first_press_attempts: Some(first_attempts),
             after: jk.proc.snapshot(),
         })?;
 
