@@ -874,6 +874,7 @@ dependencies = [
  "png 0.17.16",
  "rayon",
  "serde",
+ "serde_json",
  "smallvec",
  "toml 1.1.2+spec-1.1.0",
  "tracing",

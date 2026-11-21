@@ -32,6 +32,8 @@ toml = "1.0.7"
 # `cfg(windows)` block so the cache module can refer to it directly.
 parking_lot = "0.12"
 smallvec = "1.15.1"
+# Only for the `telemetry` feature (JSON lines in %LOCALAPPDATA%\jumpkey\telemetry).
+serde_json = { version = "1", optional = true }
 
 # Windows-only deps. Non-Windows targets compile the lib without these (and
 # without the `crate::windows` module), which keeps `cargo check` honest on
@@ -55,6 +57,14 @@ windows = { version = "0.58", features = [
     "Foundation_Numerics",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    # QPC, process memory, power plan and RAM: used by the `telemetry`
+    # feature (src/telemetry/), declared unconditionally (no runtime cost).
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Power",
+    "Win32_System_SystemInformation",
+    # QueryThreadCycleTime / QueryProcessCycleTime (telemetry CPU per span).
+    "Win32_System_WindowsProgramming",
     "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_Controls",
@@ -86,6 +96,11 @@ png = "0.17"
 # Exposes `jumpkey::windows::overlay::bench` for the criterion benchmarks.
 # Not part of the public API; off by default.
 bench = []
+# In-app timing of the element picker: one JSON line per pick in
+# %LOCALAPPDATA%\jumpkey\telemetry\ (see docs/TELEMETRY.md). Off by default
+# and never enabled in released builds; `cargo script run-telemetry`
+# installs a build with it.
+telemetry = ["dep:serde_json"]
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }

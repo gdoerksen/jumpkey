@@ -25,6 +25,8 @@ use std::process::ExitCode;
 
 #[cfg(windows)]
 use jumpkey::config::ScopeMode;
+use jumpkey::telemetry::Pick;
+use jumpkey::{tel_event, tel_record, tel_span};
 use jumpkey::{Action, Backend, Config, Element, HintEngine, HintOrder};
 
 #[cfg(windows)]
@@ -77,7 +79,8 @@ fn main() -> ExitCode {
         return run_clear_logs_command();
     }
 
-    init_tracing();
+    // Held until exit: dropping it flushes telemetry (feature builds).
+    let _tracing = init_tracing();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "jumpkey starting");
 
     let result: anyhow::Result<()>;
@@ -230,6 +233,18 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     // `Drop` unhooks `SetWinEventHook` on shutdown. Failure is
     // non-fatal: the synchronous hotkey path still works, just with
     // cold-cache UIA latency on each press.
+    // `telemetry` feature: foreground-change tracking + the `session`
+    // record (see src/telemetry/). Dropped (unhooked) on exit.
+    #[cfg(feature = "telemetry")]
+    let _telemetry = jumpkey::telemetry::start(jumpkey::telemetry::SessionInfo {
+        scope: format!("{:?}", config.scope.mode),
+        hint_order: format!("{:?}", config.hints.order),
+        alphabet_len: hint_engine.alphabet().len(),
+        caching: config.performance.enable_caching,
+        cache_ttl_ms: config.performance.cache_ttl_ms,
+        max_elements: config.scope.max_elements,
+    });
+
     let _prewarm = match jumpkey::windows::prewarm::Prewarmer::start(
         backend.cache_handle(),
         config.scope.max_elements,
@@ -385,6 +400,9 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
             // 0 = WM_QUIT (clean shutdown via PostQuitMessage), -1 = error.
             break;
         }
+        // Telemetry: note when a WM_HOTKEY arrived (no-op without the
+        // `telemetry` feature).
+        jumpkey::telemetry::note_message(msg.message, msg.time);
 
         // Custom thread message from the config-file watcher: re-read
         // the file from disk and hot-apply. Skip Translate/Dispatch
@@ -680,11 +698,13 @@ fn build_hint_engine(
 /// switched layouts since it was built, so the labels stay typeable.
 #[cfg(windows)]
 fn refresh_engine_for_layout(runtime: &mut Runtime, config: &Config) {
+    let span = tel_span!("refresh_layout", rebuilt = false).entered();
     let current = jumpkey::windows::keyboard_layout::capture_active_layout();
     if config.keyboard.layout != jumpkey::LayoutChoice::Auto || current == runtime.engine_layout_id
     {
         return;
     }
+    tel_record!(span, "rebuilt", true);
     let (engine, id) = build_hint_engine(&config.hints, &config.keyboard);
     tracing::info!("keyboard layout changed; rebuilt hint alphabet");
     runtime.hint_engine = engine;
@@ -698,11 +718,19 @@ fn dispatch_hotkey(
     runtime: &mut Runtime,
     config: &Config,
 ) -> anyhow::Result<()> {
+    let kind = match action {
+        HotkeyAction::PickElement => "element",
+        HotkeyAction::PickWindow => "window",
+        HotkeyAction::OpenSettings => return Ok(()), // Handled separately in main loop
+    };
+    // Root of this press's telemetry trace (no-op without the feature);
+    // written when it drops at the end of this function.
+    let pick = Pick::begin(kind, &runtime.scope_mode);
     refresh_engine_for_layout(runtime, config);
     match action {
-        HotkeyAction::PickElement => handle_pick_element(backend, runtime),
-        HotkeyAction::PickWindow => handle_pick_window(runtime),
-        HotkeyAction::OpenSettings => Ok(()), // Handled separately in main loop
+        HotkeyAction::PickElement => handle_pick_element(backend, runtime, &pick),
+        HotkeyAction::PickWindow => handle_pick_window(runtime, &pick),
+        HotkeyAction::OpenSettings => Ok(()),
     }
 }
 
@@ -710,12 +738,20 @@ fn dispatch_hotkey(
 fn handle_pick_element(
     backend: &mut jumpkey::windows::WindowsBackend,
     runtime: &Runtime,
+    pick: &Pick,
 ) -> anyhow::Result<()> {
     // Snapshot focus / cursor / active monitor once so enumeration and
     // label ordering agree even if focus moves during the UIA walk.
-    let ctx = jumpkey::windows::PickContext::capture();
+    let ctx = {
+        let _s = tel_span!("capture_ctx").entered();
+        jumpkey::windows::PickContext::capture()
+    };
+    tel_event!("enum_start");
     let mut elements: Vec<Element> = backend.enumerate_by_scope(runtime.scope_mode, &ctx)?;
+    tel_event!("elements_ready");
+    pick.count(elements.len());
     if elements.is_empty() {
+        pick.outcome("empty");
         tracing::info!("no interactable elements in foreground window");
         return Ok(());
     }
@@ -723,26 +759,34 @@ fn handle_pick_element(
     // Reorder so the shortest labels land nearest the configured anchor
     // (window center / cursor). Sorting `elements` itself keeps
     // `elements[result.index]` below pointing at the right element.
-    if let Some(anchor) =
-        jumpkey::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &ctx, &elements)
     {
-        jumpkey::layout_order::sort_by_proximity(&mut elements, anchor);
+        let _s = tel_span!("sort", n = elements.len()).entered();
+        if let Some(anchor) =
+            jumpkey::windows::hint_anchor(runtime.hint_order, runtime.scope_mode, &ctx, &elements)
+        {
+            jumpkey::layout_order::sort_by_proximity(&mut elements, anchor);
+        }
     }
 
-    let labels = runtime.hint_engine.generate(elements.len());
-    let hints: Vec<Hint> = elements
-        .iter()
-        .zip(labels.iter())
-        .map(|(el, label)| Hint {
-            bounds: el.bounds,
-            label: label.clone(),
-            extra: None,
-        })
-        .collect();
+    let hints: Vec<Hint> = {
+        let _s = tel_span!("labels", n = elements.len()).entered();
+        let labels = runtime.hint_engine.generate(elements.len());
+        elements
+            .iter()
+            .zip(labels.iter())
+            .map(|(el, label)| Hint {
+                bounds: el.bounds,
+                label: label.clone(),
+                extra: None,
+            })
+            .collect()
+    };
+    tel_event!("labels_ready");
     tracing::info!(count = hints.len(), "showing element overlay");
 
     match pick_hint(hints, runtime.element_style)? {
         Some(result) => {
+            pick.outcome("picked");
             let chosen = &elements[result.index];
             // Modifier held at commit time picks the action variant.
             // Ctrl + letter → double-click, Shift + letter → right-click
@@ -754,6 +798,11 @@ fn handle_pick_element(
                 PickModifier::Shift => Action::RightClick,
                 PickModifier::None => Action::Invoke,
             };
+            pick.modifier(match result.modifier {
+                PickModifier::Ctrl => "ctrl",
+                PickModifier::Shift => "shift",
+                PickModifier::None => "none",
+            });
             tracing::info!(
                 id = ?chosen.id,
                 role = ?chosen.role,
@@ -761,19 +810,37 @@ fn handle_pick_element(
                 ?action,
                 "element selected — performing"
             );
-            if let Err(e) = backend.perform(chosen.id, action) {
+            let performed = {
+                let span = tel_span!(
+                    "perform",
+                    action = ?action,
+                    invoke_path = tracing::field::Empty,
+                    ok = tracing::field::Empty
+                )
+                .entered();
+                let performed = backend.perform(chosen.id, action);
+                tel_record!(span, "ok", performed.is_ok());
+                performed
+            };
+            tel_event!("action_done");
+            if let Err(e) = performed {
                 tracing::warn!(error = ?e, "perform failed");
             }
         }
-        None => tracing::info!("element overlay cancelled"),
+        None => {
+            pick.outcome("cancelled");
+            tracing::info!("element overlay cancelled");
+        }
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn handle_pick_window(runtime: &Runtime) -> anyhow::Result<()> {
+fn handle_pick_window(runtime: &Runtime, pick: &Pick) -> anyhow::Result<()> {
     let windows = window_picker::enumerate_visible()?;
+    pick.count(windows.len());
     if windows.is_empty() {
+        pick.outcome("empty");
         tracing::info!("no visible top-level windows");
         notification::info("jumpkey", "No visible windows to pick from.");
         return Ok(());
@@ -782,37 +849,79 @@ fn handle_pick_window(runtime: &Runtime) -> anyhow::Result<()> {
 
     match window_picker::pick_with(windows, &runtime.hint_engine, runtime.window_style)? {
         Some(chosen) => {
+            pick.outcome("picked");
             tracing::info!(title = %chosen.title, "window selected — focusing");
             window_picker::focus(chosen.hwnd)?;
+            tel_event!("action_done");
         }
-        None => tracing::info!("window overlay cancelled"),
+        None => {
+            pick.outcome("cancelled");
+            tracing::info!("window overlay cancelled");
+        }
     }
     Ok(())
 }
 
-fn init_tracing() {
-    use tracing_subscriber::{fmt, EnvFilter};
+/// Keeps the telemetry writer alive until exit (feature builds only);
+/// dropping it writes any open trace and flushes the file.
+struct TracingGuard {
+    #[cfg(all(feature = "telemetry", windows))]
+    _telemetry: Option<jumpkey::telemetry::TelemetryGuard>,
+}
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+/// Set up logging: the normal log (stderr in debug builds, daily files
+/// in `%LOCALAPPDATA%\jumpkey\` in release builds) and, with the
+/// `telemetry` feature, the telemetry layer. Each has its own filter,
+/// so `RUST_LOG` only affects the log and telemetry spans never show up
+/// in it.
+fn init_tracing() -> TracingGuard {
+    use tracing_subscriber::{
+        fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+    };
 
-    #[cfg(debug_assertions)]
-    {
-        fmt().with_env_filter(filter).with_target(false).init();
+    #[allow(unused_mut)]
+    let mut filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Telemetry spans and events go to their own layer, never the log.
+    #[cfg(all(feature = "telemetry", windows))]
+    if let Ok(off) = format!("{}=off", jumpkey::telemetry::TARGET).parse() {
+        filter = filter.add_directive(off);
     }
+    let log = fmt::layer()
+        .with_target(false)
+        // Colours only on the debug console, never in log files.
+        .with_ansi(cfg!(debug_assertions))
+        .with_writer(log_writer())
+        .with_filter(filter);
+    let registry = tracing_subscriber::registry().with(log);
+
+    #[cfg(all(feature = "telemetry", windows))]
+    {
+        let (layer, guard) = match jumpkey::telemetry::layer() {
+            Some((layer, guard)) => (Some(layer), Some(guard)),
+            None => (None, None),
+        };
+        registry.with(layer).init();
+        TracingGuard { _telemetry: guard }
+    }
+    #[cfg(not(all(feature = "telemetry", windows)))]
+    {
+        registry.init();
+        TracingGuard {}
+    }
+}
+
+/// Where the normal log goes: stderr in debug builds; in release builds
+/// daily-rotated files with a 7-file ceiling (the old `rolling::never`
+/// appended forever and produced multi-hundred-megabyte files on
+/// long-running installs), or stderr if `%LOCALAPPDATA%` isn't writable.
+fn log_writer() -> tracing_subscriber::fmt::writer::BoxMakeWriter {
+    use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
     #[cfg(not(debug_assertions))]
     {
-        use std::fs;
         use tracing_appender::rolling::{RollingFileAppender, Rotation};
-
-        // Daily-rotated logs with a 7-file ceiling. Pre-rotation behaviour
-        // (`rolling::never`) appended forever and was the source of
-        // multi-hundred-megabyte log files on long-running installs.
-        // Daily rotation matches what most desktop apps do (`%TEMP%`,
-        // `%LOCALAPPDATA%\Microsoft\...`); seven files is plenty for
-        // bug repros without becoming a disk hazard.
         if let Some(log_dir) = get_log_dir() {
-            if fs::create_dir_all(&log_dir).is_ok() {
+            if std::fs::create_dir_all(&log_dir).is_ok() {
                 let appender = RollingFileAppender::builder()
                     .rotation(Rotation::DAILY)
                     .filename_prefix("jumpkey")
@@ -820,20 +929,12 @@ fn init_tracing() {
                     .max_log_files(7)
                     .build(&log_dir);
                 if let Ok(file_appender) = appender {
-                    fmt()
-                        .with_env_filter(filter)
-                        .with_target(false)
-                        .with_writer(file_appender)
-                        .init();
-                    return;
+                    return BoxMakeWriter::new(file_appender);
                 }
             }
         }
-        // If we couldn't open a log file (read-only profile, missing
-        // %LOCALAPPDATA%, …) fall back to stderr so debug builds stay
-        // useful even in unusual environments.
-        fmt().with_env_filter(filter).with_target(false).init();
     }
+    BoxMakeWriter::new(std::io::stderr)
 }
 
 /// Directory holding all jumpkey log files. Returns `None` when

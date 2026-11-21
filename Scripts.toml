@@ -242,3 +242,29 @@ if (-not $location) {
 }
 Write-Host $location
 """
+
+# ---------------------------------------------------------------------------
+# Everyday jumpkey with in-app timing (the `telemetry` feature, see
+# docs/TELEMETRY.md). Quits the running jumpkey, installs a telemetry build
+# over the copy in ~/.cargo/bin (same path, so launch-at-startup keeps
+# working and telemetry survives reboots) and starts it. Records go to
+# %LOCALAPPDATA%\jumpkey\telemetry\. `cargo script install` switches back
+# to the normal build.
+# ---------------------------------------------------------------------------
+
+[scripts.run-telemetry]
+interpreter = "powershell"
+info = 'Install + start jumpkey with the telemetry feature (records in %LOCALAPPDATA%\jumpkey\telemetry)'
+command = '''
+$ErrorActionPreference = 'Stop'
+$bin = if ($env:CARGO_HOME) { Join-Path $env:CARGO_HOME 'bin' } else { Join-Path $env:USERPROFILE '.cargo\bin' }
+$exe = Join-Path $bin 'jumpkey.exe'
+# Ask any running jumpkey (whichever exe) to quit: cargo can't overwrite a
+# running exe, and the single-instance guard would block the new one.
+if (Test-Path $exe) { & $exe --close | Out-Null; Start-Sleep -Milliseconds 500 }
+# Own target dir so this doesn't fight pick-bench's release build.
+cargo install --path . --locked --force --features telemetry --target-dir target/telemetry
+if ($LASTEXITCODE -ne 0) { exit 1 }
+Start-Process $exe
+Write-Host "jumpkey (telemetry build) started; records in $env:LOCALAPPDATA\jumpkey\telemetry"
+'''
