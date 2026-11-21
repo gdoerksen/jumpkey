@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: form</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 24px; }
+  fieldset { margin-bottom: 16px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 20px; }
+  label { display: flex; flex-direction: column; gap: 4px; }
+  .inline { flex-direction: row; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<h1>Account settings</h1>
+<form onsubmit="return false">
+  <fieldset>
+    <legend>Profile</legend>
+    <label>First name <input type="text"></label>
+    <label>Last name <input type="text"></label>
+    <label>Email <input type="email"></label>
+    <label>Phone <input type="tel"></label>
+    <label>Website <input type="url"></label>
+    <label>Birthday <input type="date"></label>
+    <label>Country
+      <select><option>Canada</option><option>United States</option><option>Mexico</option><option>Other</option></select>
+    </label>
+    <label>Language
+      <select><option>English</option><option>Français</option><option>Español</option></select>
+    </label>
+    <label>Time zone
+      <select><option>UTC-8</option><option>UTC-7</option><option>UTC-6</option><option>UTC-5</option></select>
+    </label>
+    <label style="grid-column: span 3">Bio <textarea rows="3"></textarea></label>
+  </fieldset>
+  <fieldset>
+    <legend>Notifications</legend>
+    <label class="inline"><input type="checkbox"> Product updates</label>
+    <label class="inline"><input type="checkbox"> Security alerts</label>
+    <label class="inline"><input type="checkbox"> Weekly digest</label>
+    <label class="inline"><input type="checkbox"> Mentions</label>
+    <label class="inline"><input type="checkbox"> Replies</label>
+    <label class="inline"><input type="checkbox"> Newsletter</label>
+    <label class="inline"><input type="radio" name="freq"> Instantly</label>
+    <label class="inline"><input type="radio" name="freq"> Hourly</label>
+    <label class="inline"><input type="radio" name="freq"> Daily</label>
+  </fieldset>
+  <fieldset>
+    <legend>Privacy</legend>
+    <label>Profile visibility <input type="range" min="0" max="2"></label>
+    <label>Session timeout (minutes) <input type="number" min="5" max="120" value="30"></label>
+    <label>Recovery code <input type="password"></label>
+  </fieldset>
+  <button>Save</button> <button type="reset">Reset</button> <button>Cancel</button>
+  <a href="#help">Help</a> <a href="#delete">Delete account</a>
+</form>
+</body>
+</html>

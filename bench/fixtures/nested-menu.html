@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: nested menu</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; }
+  [role=menubar] { display: flex; background: #2b2b2b; margin: 0; padding: 0; list-style: none; }
+  [role=menubar] > li { position: relative; }
+  [role=menubar] > li > button { color: #fff; background: none; border: 0; padding: 8px 14px; }
+  [role=menu] { position: absolute; top: 100%; left: 0; min-width: 200px; background: #fff;
+                border: 1px solid #bbb; box-shadow: 0 4px 12px #0003; list-style: none; margin: 0; padding: 4px 0; }
+  [role=menu] [role=menu] { top: -5px; left: 100%; }
+  [role=menu] li { position: relative; }
+  [role=menuitem] { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 14px; }
+  [role=menuitem][aria-haspopup]::after { content: " ▸"; float: right; }
+</style>
+</head>
+<body>
+<!-- A menubar with the "Edit" menu and its "Find" submenu shown open,
+     so the menu items are on screen as a menu would be mid-navigation
+     (review #31/#42: in-window menus as in VS Code). Static on purpose:
+     no state changes between presses. -->
+<ul role="menubar" aria-label="Main">
+  <li><button role="menuitem" aria-haspopup="true">File</button></li>
+  <li>
+    <button role="menuitem" aria-haspopup="true" aria-expanded="true">Edit</button>
+    <ul role="menu" aria-label="Edit">
+      <li><button role="menuitem">Undo</button></li>
+      <li><button role="menuitem">Redo</button></li>
+      <li><button role="menuitem">Cut</button></li>
+      <li><button role="menuitem">Copy</button></li>
+      <li><button role="menuitem">Paste</button></li>
+      <li>
+        <button role="menuitem" aria-haspopup="true" aria-expanded="true">Find</button>
+        <ul role="menu" aria-label="Find">
+          <li><button role="menuitem">Find…</button></li>
+          <li><button role="menuitem">Find next</button></li>
+          <li><button role="menuitem">Find previous</button></li>
+          <li><button role="menuitem">Replace…</button></li>
+          <li><button role="menuitem">Find in files…</button></li>
+          <li><button role="menuitem">Replace in files…</button></li>
+        </ul>
+      </li>
+      <li><button role="menuitem">Select all</button></li>
+      <li><button role="menuitem" aria-haspopup="true">Advanced</button></li>
+    </ul>
+  </li>
+  <li><button role="menuitem" aria-haspopup="true">View</button></li>
+  <li><button role="menuitem" aria-haspopup="true">Go</button></li>
+  <li><button role="menuitem" aria-haspopup="true">Run</button></li>
+  <li><button role="menuitem" aria-haspopup="true">Terminal</button></li>
+  <li><button role="menuitem" aria-haspopup="true">Help</button></li>
+</ul>
+<main style="padding: 400px 24px 24px">
+  <p>Page content below the menus: <a href="#a">link one</a>, <a href="#b">link two</a>,
+     <button>Button</button>.</p>
+</main>
+</body>
+</html>

@@ -22,3 +22,11 @@ Thumbs.db
 
 # Claude Code personal settings
 .claude/settings.local.json
+
+# pick-bench output and generated fixtures (baselines worth keeping are
+# copied to .agents/benchmarks/)
+/bench/results/
+/bench/fixtures/folder/
+
+# Claude Code session worktrees
+.claude/worktrees/

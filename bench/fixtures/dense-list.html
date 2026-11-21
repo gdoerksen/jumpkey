@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: dense list</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 0; }
+  header { position: sticky; top: 0; background: #f3f3f3; padding: 6px 12px; border-bottom: 1px solid #ccc; display: flex; gap: 8px; }
+  .row { display: flex; align-items: center; gap: 10px; height: 26px; padding: 0 12px; border-bottom: 1px solid #eee; }
+  .row:nth-child(odd) { background: #fafafa; }
+  .row a { flex: 1; color: #222; text-decoration: none; }
+  .row button { border: 0; background: none; cursor: pointer; }
+  .date { width: 90px; color: #666; text-align: right; }
+</style>
+</head>
+<body>
+<!-- Deterministic: same rows on every run. Mail / file-list shape: each
+     row is a link containing a checkbox and a star button (review #25). -->
+<header>
+  <button>Archive</button><button>Delete</button><button>Mark read</button>
+  <button>Move to</button><button>Labels</button><input type="search" placeholder="Search">
+</header>
+<main id="list" role="list"></main>
+<script>
+  const list = document.getElementById("list");
+  const words = ["Quarterly", "report", "invoice", "meeting", "notes", "draft", "review", "update",
+                 "design", "plan", "budget", "release", "follow-up", "agenda", "summary", "proposal"];
+  let seed = 12345;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 500; i++) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.setAttribute("role", "listitem");
+    const subject = Array.from({ length: 3 + rnd(4) }, () => words[rnd(words.length)]).join(" ");
+    row.innerHTML =
+      `<input type="checkbox" aria-label="Select row ${i + 1}">` +
+      `<button aria-label="Star row ${i + 1}">☆</button>` +
+      `<a href="#row-${i + 1}">${i + 1}. ${subject}</a>` +
+      `<span class="date">2026-${String(1 + rnd(12)).padStart(2, "0")}-${String(1 + rnd(28)).padStart(2, "0")}</span>`;
+    list.appendChild(row);
+  }
+</script>
+</body>
+</html>

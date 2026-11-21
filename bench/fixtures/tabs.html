@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: tabs</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 0; }
+  [role=tablist] { display: flex; flex-wrap: wrap; background: #e8e8e8; padding: 4px 4px 0; gap: 2px; }
+  [role=tab] { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; width: 150px;
+               background: #d6d6d6; border-radius: 6px 6px 0 0; cursor: default; }
+  [role=tab][aria-selected=true] { background: #fff; }
+  [role=tab] span { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  [role=tab] button { border: 0; background: none; width: 18px; height: 18px; border-radius: 4px; }
+  [role=tabpanel] { padding: 20px; }
+</style>
+</head>
+<body>
+<!-- 30 tabs, each with a close button inside, like a browser tab strip
+     (review #25: does the tab or its close button get the label?). -->
+<div role="tablist" id="tabs" aria-label="Open documents"></div>
+<div role="tabpanel">
+  <p>Selected document content with <a href="#x">a link</a> and <button>a button</button>.</p>
+</div>
+<script>
+  const tabs = document.getElementById("tabs");
+  for (let i = 0; i < 30; i++) {
+    const t = document.createElement("div");
+    t.setAttribute("role", "tab");
+    t.tabIndex = i === 0 ? 0 : -1;
+    t.setAttribute("aria-selected", i === 0 ? "true" : "false");
+    t.innerHTML = `<span>Document ${i + 1}.txt</span><button aria-label="Close Document ${i + 1}">×</button>`;
+    t.addEventListener("click", () => {
+      tabs.querySelectorAll("[role=tab]").forEach(x => x.setAttribute("aria-selected", "false"));
+      t.setAttribute("aria-selected", "true");
+    });
+    tabs.appendChild(t);
+  }
+</script>
+</body>
+</html>
