@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SW_RESTORE, SW_SHOWNORMAL, WM_CLOSE, WNDCLASSW, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
 };
 
-use super::events::{pump_sleep, pump_until};
+use super::events::{pump_sleep, pump_until, pump_until_every};
 use super::input::tap_alt;
 use super::process::exe_name;
 
@@ -102,7 +102,9 @@ pub fn app_windows_of_exe(exe: &str) -> Vec<isize> {
 /// Wait for a new app window of `exe` that wasn't in `before`.
 pub fn wait_new_window(exe: &str, before: &HashSet<isize>, timeout: Duration) -> Option<isize> {
     let mut found = None;
-    pump_until(timeout, || {
+    // Enumerating windows and their exe names is too costly to repeat
+    // every millisecond, and nothing is timed here.
+    pump_until_every(timeout, Duration::from_millis(50), || {
         found = app_windows_of_exe(exe)
             .into_iter()
             .find(|h| !before.contains(h));

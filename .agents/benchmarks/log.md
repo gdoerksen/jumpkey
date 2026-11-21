@@ -37,6 +37,16 @@ baseline.**
 (Label counts from jumpkey's log, matched to scenarios by jumpkey
 restarts, which happen once per scenario.)
 
+**Target CPU method fixed after this run:** the harness summed the
+window process's whole tree. For Explorer that's the shell (69
+processes: the real Vivaldi, Claude, shells, tray apps); for VS Code and
+Terminal it included their shells. It now counts only descendants
+running the same exe. A re-check (`144414-fixcheck`, 3 presses each)
+counted 1 process for Explorer and Terminal and 10 for VS Code, with
+nearly the same numbers (Explorer 118 ms, Terminal 16–19 ms, VS Code
+76–366 ms target CPU), so the values above stand; the other processes
+were idle.
+
 ### What this shows
 
 - **Page size dominates.** Small pages (form, tabs, menus) take

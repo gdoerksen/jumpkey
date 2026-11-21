@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::win::clock::{qpc, qpc_delta_us};
-use crate::win::events::{pump_until, Watcher};
+use crate::win::events::{pump_until, pump_until_every, Watcher};
 use crate::win::process::Proc;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -95,28 +95,36 @@ impl Jumpkey {
         })
     }
 
-    /// Wait until jumpkey has finished starting: at least `MIN_STARTUP`
-    /// since spawn and none of its windows visible for a moment.
+    /// Wait until jumpkey has finished starting.
     ///
     /// Today a splash screen is up for ~2.5 s, and a hotkey pressed
-    /// while it shows isn't handled until some later message wakes
-    /// jumpkey's main loop (found by this harness). Waiting for "no
-    /// visible jumpkey window" covers that without assuming a splash
-    /// exists at all.
+    /// while it shows is only handled once the splash closes. So: once a
+    /// jumpkey window has been seen, wait until none has been visible
+    /// for `QUIET`. If no window appears at all, assume a build without a
+    /// splash and go ahead after `NO_WINDOW` (the splash normally shows
+    /// within milliseconds of start, so this only waits on such builds).
+    /// No particular window is assumed, so this survives UI changes.
     pub fn wait_startup(&mut self, timeout: Duration) -> Result<()> {
         const MIN_STARTUP: Duration = Duration::from_millis(1000);
+        const NO_WINDOW: Duration = Duration::from_millis(3000);
         const QUIET: Duration = Duration::from_millis(400);
         let pid = self.pid();
-        let start = qpc();
+        let start = self.spawned_qpc;
+        let mut seen_window = false;
         let mut quiet_since: Option<i64> = None;
-        let ok = pump_until(timeout, || {
+        let ok = pump_until_every(timeout, Duration::from_millis(20), || {
             let now = qpc();
             if crate::win::window::visible_windows_of_pid(pid) > 0 {
+                seen_window = true;
                 quiet_since = None;
                 return false;
             }
+            let since_spawn = qpc_delta_us(start, now);
+            if !seen_window {
+                return since_spawn >= NO_WINDOW.as_micros() as u64;
+            }
             let since = *quiet_since.get_or_insert(now);
-            qpc_delta_us(start, now) >= MIN_STARTUP.as_micros() as u64
+            since_spawn >= MIN_STARTUP.as_micros() as u64
                 && qpc_delta_us(since, now) >= QUIET.as_micros() as u64
         });
         if !self.is_running() {

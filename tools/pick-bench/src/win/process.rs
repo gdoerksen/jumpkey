@@ -162,28 +162,54 @@ pub fn pids_of_exe(exe: &str) -> Vec<u32> {
         .collect()
 }
 
-/// `root` plus all of its descendants.
+/// `root` plus its descendants that run the same executable.
 ///
-/// Chromium and Electron apps (Vivaldi, VS Code) build the
+/// Chromium and Electron apps (Vivaldi, Edge, VS Code) build the
 /// accessibility tree in renderer / helper processes, not in the
 /// process that owns the window, so the cost jumpkey imposes on them
-/// only shows up when the whole tree is counted.
+/// only shows up when those are counted. They all run the app's own
+/// exe, so the walk stops at any other image: otherwise the shell
+/// `explorer.exe` would pull in every app started from Start or the
+/// taskbar, and VS Code / Terminal their shells and tools.
+///
+/// Toolhelp parent ids are never cleared when a parent exits, so a
+/// reused pid can make an unrelated process look like a child. A child
+/// must therefore have been created no earlier than its parent.
 pub fn process_tree(root: u32) -> Vec<u32> {
     let procs = all_processes();
+    let Some(root_exe) = procs
+        .iter()
+        .find(|(pid, _, _)| *pid == root)
+        .map(|(_, _, n)| n.clone())
+    else {
+        return vec![root];
+    };
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for (pid, ppid, _) in &procs {
-        if pid != ppid {
+    for (pid, ppid, exe) in &procs {
+        if pid != ppid && exe.eq_ignore_ascii_case(&root_exe) {
             children.entry(*ppid).or_default().push(*pid);
         }
     }
+    let mut created: HashMap<u32, Option<u64>> = HashMap::new();
+    let mut created_of = |pid: u32| *created.entry(pid).or_insert_with(|| created_unix_ms(pid));
     let mut seen = HashSet::new();
     let mut stack = vec![root];
     while let Some(p) = stack.pop() {
         if !seen.insert(p) {
             continue;
         }
-        if let Some(kids) = children.get(&p) {
-            stack.extend(kids.iter().copied());
+        let Some(kids) = children.get(&p) else {
+            continue;
+        };
+        let parent_created = created_of(p);
+        for &k in kids {
+            // Unknown creation time (access denied, already exited):
+            // leave it out rather than risk a stale link.
+            if let (Some(pc), Some(kc)) = (parent_created, created_of(k)) {
+                if kc >= pc {
+                    stack.push(k);
+                }
+            }
         }
     }
     let mut out: Vec<u32> = seen.into_iter().collect();
@@ -249,8 +275,9 @@ pub fn is_alive(pid: u32) -> bool {
     all_processes().iter().any(|(p, _, _)| *p == pid)
 }
 
-/// Terminate `root` and all its descendants. Only used for browser
-/// instances the harness started with a throwaway profile.
+/// Terminate `root` and its same-exe descendants (see [`process_tree`]).
+/// Only used for browser instances the harness started with a
+/// throwaway profile.
 pub fn kill_tree(root: u32) -> usize {
     let mut killed = 0;
     for pid in process_tree(root) {
@@ -265,4 +292,23 @@ pub fn kill_tree(root: u32) -> usize {
         }
     }
     killed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_tree_keeps_root_and_skips_children_of_other_exes() {
+        let me = std::process::id();
+        let mut child = std::process::Command::new("cmd.exe")
+            .args(["/c", "ping -n 3 127.0.0.1 >nul"])
+            .spawn()
+            .expect("start cmd.exe");
+        let tree = process_tree(me);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(tree.contains(&me));
+        assert!(!tree.contains(&child.id()));
+    }
 }

@@ -153,8 +153,22 @@ pub fn clear() {
 /// Pump this thread's messages until `done()` returns true or `timeout`
 /// elapses. Returns whether `done` became true. Used for every wait in
 /// the harness so WinEvent callbacks and our own window keep running.
-pub fn pump_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = qpc() + (timeout.as_secs_f64() * qpc_freq() as f64) as i64;
+///
+/// `done()` is checked after every message and at least every 1 ms, so
+/// cheap checks of external state (the foreground window, a queued
+/// WinEvent) are timed precisely. Use [`pump_until_every`] for checks
+/// that are expensive or don't need that precision.
+pub fn pump_until(timeout: Duration, done: impl FnMut() -> bool) -> bool {
+    pump_until_every(timeout, Duration::from_millis(1), done)
+}
+
+/// [`pump_until`], checking `done()` after every message and at least
+/// every `poll` (e.g. a process snapshot or a directory delete every
+/// 100 ms instead of every millisecond).
+pub fn pump_until_every(timeout: Duration, poll: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let freq = qpc_freq() as f64;
+    let deadline = qpc() + (timeout.as_secs_f64() * freq) as i64;
+    let poll_ms = poll.as_millis().clamp(1, u32::MAX as u128) as u32;
     loop {
         drain_messages();
         if done() {
@@ -164,14 +178,13 @@ pub fn pump_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
         if now >= deadline {
             return false;
         }
-        let remaining_ms = (((deadline - now) as f64 / qpc_freq() as f64) * 1000.0).ceil() as u32;
+        let remaining_ms = (((deadline - now) as f64 / freq) * 1000.0).ceil() as u32;
         // Sleep until a message arrives (WinEvent callbacks arrive as
-        // messages) or the deadline. 1 ms cap keeps `done()` closures
-        // that poll external state responsive.
+        // messages), the next poll, or the deadline.
         unsafe {
             MsgWaitForMultipleObjectsEx(
                 None,
-                remaining_ms.clamp(1, 1),
+                remaining_ms.clamp(1, poll_ms),
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
             );
@@ -179,9 +192,10 @@ pub fn pump_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Sleep while pumping messages.
+/// Sleep while pumping messages. Wakes only for messages and the
+/// deadline.
 pub fn pump_sleep(d: Duration) {
-    pump_until(d, || false);
+    pump_until_every(d, d, || false);
 }
 
 fn drain_messages() {

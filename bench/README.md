@@ -48,7 +48,7 @@ intervals for A/B, budgets) comes with `scripts/telemetry_summary.py`.
 | `hotkey_to_visible_us` | Hotkey sent → a jumpkey window became visible. Both timestamps are `QueryPerformanceCounter`, which is system-wide, so the number is accurate across processes. |
 | `visible_to_foreground_us` | Visible → jumpkey owns the foreground (today's overlay takes focus; a future no-activate overlay won't, so this becomes empty). |
 | `jumpkey_cpu_ms` | jumpkey CPU from hotkey to overlay hidden (`QueryProcessCycleTime`, converted with the measured TSC rate). |
-| `target_cpu_ms` | CPU used over the same interval by the **whole process tree** of the target app. Chromium and Electron build the accessibility tree in renderer processes, so the window's own process isn't enough. This is the cost jumpkey puts on the app you're using. |
+| `target_cpu_ms` | CPU used over the same interval by the target window's process **plus its descendants running the same exe**. Chromium and Electron build the accessibility tree in renderer processes (same exe), so the window's own process isn't enough; other images are left out so the shell `explorer.exe` doesn't pull in every app started from Start, nor VS Code / Terminal their shells. This is the cost jumpkey puts on the app you're using. |
 | `between_*` | Since the previous overlay closed: window switching, dwell time, and what jumpkey did in the background meanwhile (cache warming). |
 | `after.*` | jumpkey private bytes, working set, handles, GDI/USER objects after each press. |
 | `idle` record | jumpkey CPU over `--idle-secs` with nobody pressing anything. |

@@ -20,7 +20,7 @@ use crate::output::{BuildInfo, Iteration, Manifest, Record, RunWriter, SCHEMA};
 use crate::scenario::{Pattern, Placeholders, Scenario, ScenarioFile};
 use crate::stats::summarize;
 use crate::win::clock::{cycles_to_ms, qpc, qpc_delta_us};
-use crate::win::events::{self, pump_sleep, pump_until};
+use crate::win::events::{self, pump_sleep, pump_until, pump_until_every};
 use crate::win::input::{self, Chord};
 use crate::win::process::{self, cycles_delta, pids_of_exe, process_tree, ProcGroup};
 use crate::win::window::{self, NeutralWindow};
@@ -29,12 +29,18 @@ use crate::win::{self as w, machine};
 /// Generous upper bounds; a timeout is recorded, not fatal.
 const VISIBLE_TIMEOUT: Duration = Duration::from_secs(10);
 const HIDE_TIMEOUT: Duration = Duration::from_secs(5);
+/// After a visible timeout, how much longer to wait for a late overlay
+/// so it can be closed before the next press.
+const LATE_SHOW_GRACE: Duration = Duration::from_secs(10);
 /// The first press after start pays one-time costs; allow more time.
 const FIRST_PRESS_TIMEOUT: Duration = Duration::from_secs(20);
 /// Upper bound for jumpkey's startup (splash screen etc.).
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Time to look away (neutral window focused) in switch-then-press.
 const AWAY_MS: u64 = 300;
+/// How often to check slow external state (process exit, deleting a
+/// profile folder) while waiting.
+const SLOW_POLL: Duration = Duration::from_millis(100);
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -59,7 +65,6 @@ fn check_stop() -> Result<()> {
 
 struct Ctx {
     opts: Options,
-    repo: PathBuf,
     run_id: String,
     neutral: NeutralWindow,
     writer: RunWriter,
@@ -138,17 +143,36 @@ pub fn run(opts: Options) -> Result<()> {
             bail!("missing config template {}", template(scope).display());
         }
     }
-    let hotkey_text = match &opts.hotkey {
-        Some(h) => h.clone(),
-        None => template_chords(&template(&opts.scopes[0]))?
-            .into_iter()
-            .find(|(name, _)| name == "pick_element")
-            .map(|(_, c)| c)
-            // jumpkey's documented default.
-            .unwrap_or_else(|| "Ctrl+Shift+Space".into()),
+    // The chord to press, per scope (each scope's jumpkey reads its own
+    // template).
+    let mut chords: BTreeMap<String, Chord> = BTreeMap::new();
+    for scope in &opts.scopes {
+        let text = match &opts.hotkey {
+            Some(h) => h.clone(),
+            None => template_chords(&template(scope))?
+                .into_iter()
+                .find(|(name, _)| name == "pick_element")
+                .map(|(_, c)| c)
+                // jumpkey's documented default.
+                .unwrap_or_else(|| "Ctrl+Shift+Space".into()),
+        };
+        chords.insert(scope.clone(), Chord::parse(&text)?);
+    }
+    let pressed: Vec<String> = chords.values().map(|c| c.text.clone()).collect();
+    check_chords_free(&opts.scopes, &template, &pressed)?;
+    // One chord in the usual case; otherwise `scope=chord; …`.
+    let mut unique = pressed.clone();
+    unique.sort();
+    unique.dedup();
+    let hotkey_text = if unique.len() == 1 {
+        unique.remove(0)
+    } else {
+        chords
+            .iter()
+            .map(|(s, c)| format!("{s}={}", c.text))
+            .collect::<Vec<_>>()
+            .join("; ")
     };
-    let chord = Chord::parse(&hotkey_text)?;
-    check_chords_free(&opts.scopes, &template, &hotkey_text)?;
 
     let scenario_names: Vec<String> = if opts.manual {
         vec!["manual".into()]
@@ -234,7 +258,6 @@ pub fn run(opts: Options) -> Result<()> {
     let neutral = NeutralWindow::create([40, 40, 480, 320])?;
     let mut ctx = Ctx {
         opts,
-        repo,
         run_id,
         neutral,
         writer,
@@ -249,7 +272,7 @@ pub fn run(opts: Options) -> Result<()> {
         &scenarios,
         &ph,
         &builds,
-        &chord,
+        &chords,
         &scenario_names,
         &template,
     );
@@ -260,7 +283,7 @@ pub fn run(opts: Options) -> Result<()> {
     ctx.writer.write_manifest(&manifest)?;
     if let Some(dir) = &ph.profiles {
         let gone = !dir.exists()
-            || pump_until(Duration::from_secs(30), || {
+            || pump_until_every(Duration::from_secs(30), SLOW_POLL, || {
                 std::fs::remove_dir_all(dir).is_ok() || !dir.exists()
             });
         if !gone {
@@ -271,7 +294,6 @@ pub fn run(opts: Options) -> Result<()> {
         }
     }
     print_table(&ctx);
-    let _ = ctx.repo;
     outcome
 }
 
@@ -282,7 +304,7 @@ fn run_matrix(
     scenarios: &ScenarioFile,
     ph: &Placeholders,
     builds: &[BuildInfo],
-    chord: &Chord,
+    chords: &BTreeMap<String, Chord>,
     scenario_names: &[String],
     template: &dyn Fn(&str) -> PathBuf,
 ) -> Result<()> {
@@ -298,6 +320,7 @@ fn run_matrix(
             };
             let Some(target) = target else { continue };
             println!("== {scope} / {name}");
+            let chord = &chords[scope];
             let result = (|| -> Result<()> {
                 for pattern in &patterns {
                     run_pattern(ctx, builds, chord, scope, &target, *pattern, template)?;
@@ -312,7 +335,9 @@ fn run_matrix(
                     // last window closes, and would sit there forever.
                     // This instance only exists for the benchmark, so end
                     // it if it hasn't quit on its own.
-                    if !pump_until(Duration::from_secs(5), || !process::is_alive(pid)) {
+                    if !pump_until_every(Duration::from_secs(5), SLOW_POLL, || {
+                        !process::is_alive(pid)
+                    }) {
                         process::kill_tree(pid);
                     }
                 }
@@ -320,7 +345,7 @@ fn run_matrix(
                     // The browser holds files until all its processes exit,
                     // which can take a while; anything left is removed by
                     // the sweep at the end of the run.
-                    pump_until(Duration::from_secs(15), || {
+                    pump_until_every(Duration::from_secs(15), SLOW_POLL, || {
                         std::fs::remove_dir_all(dir).is_ok() || !dir.exists()
                     });
                 }
@@ -409,7 +434,7 @@ fn run_block(
             bail!(
                 "jumpkey never showed an overlay after the hotkey ({}). Check the hotkey matches \
                  the config template, and that the target window has clickable elements.",
-                ctx.opts.hotkey.as_deref().unwrap_or("from template")
+                chord.text
             );
         };
         let first_us = qpc_delta_us(first.sent_qpc, first_visible_qpc);
@@ -447,6 +472,7 @@ fn run_block(
                     sandbox_dir.display()
                 );
             }
+            dismiss_leftover_overlay(&mut jk)?;
             // Behaviour before the press.
             let mut focus_retries = 0;
             match pattern {
@@ -549,6 +575,26 @@ struct Press {
     hidden_qpc: Option<i64>,
 }
 
+/// Close any jumpkey window still showing (a late overlay, or one Esc
+/// didn't close): Esc until none is visible. Errors if it won't go away,
+/// because every later measurement would be wrong.
+fn dismiss_leftover_overlay(jk: &mut Jumpkey) -> Result<()> {
+    let pid = jk.pid();
+    for _ in 0..3 {
+        if window::visible_windows_of_pid(pid) == 0 {
+            return Ok(());
+        }
+        input::tap_escape()?;
+        pump_until_every(HIDE_TIMEOUT, Duration::from_millis(20), || {
+            window::visible_windows_of_pid(pid) == 0
+        });
+    }
+    if window::visible_windows_of_pid(pid) == 0 {
+        return Ok(());
+    }
+    bail!("a jumpkey window stays visible after Esc; stopping so it can't skew later presses")
+}
+
 /// Press the hotkey, wait for a jumpkey window to appear, dismiss it
 /// with Esc and wait for it to disappear.
 fn press_and_dismiss(
@@ -561,6 +607,12 @@ fn press_and_dismiss(
     let sent_qpc = qpc();
     input::send_chord(chord)?;
     let Some(shown) = jk.watcher.wait_show(timeout) else {
+        // The search may still finish: give it as long again, and close
+        // the overlay if it appears, so it can't sit over the target and
+        // swallow the next presses. The press stays a timeout.
+        if jk.watcher.wait_show(LATE_SHOW_GRACE).is_some() {
+            dismiss_leftover_overlay(jk)?;
+        }
         return Ok(Press {
             sent_qpc,
             visible_qpc: None,
@@ -618,7 +670,7 @@ fn measure_idle(
     let c0 = jk.proc.cycles();
     let q0 = qpc();
     let deadline = Duration::from_secs(ctx.opts.idle_secs);
-    pump_until(deadline, || STOP.load(Ordering::SeqCst));
+    pump_until_every(deadline, SLOW_POLL, || STOP.load(Ordering::SeqCst));
     check_stop()?;
     let secs = qpc_delta_us(q0, qpc()) as f64 / 1e6;
     let cycles = match (c0, jk.proc.cycles()) {
@@ -782,9 +834,9 @@ fn template_chords(path: &Path) -> Result<Vec<(String, String)>> {
 fn check_chords_free(
     scopes: &[String],
     template: &dyn Fn(&str) -> PathBuf,
-    pressed: &str,
+    pressed: &[String],
 ) -> Result<()> {
-    let mut chords: Vec<String> = vec![pressed.to_string()];
+    let mut chords: Vec<String> = pressed.to_vec();
     for scope in scopes {
         chords.extend(
             template_chords(&template(scope))?
@@ -800,8 +852,13 @@ fn check_chords_free(
         .collect();
     if !taken.is_empty() {
         bail!(
-            "these hotkeys are already registered by another app: {}. Close that app, or change              the chords in bench/config/*.toml (and --hotkey if you pass it).",
-            taken.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            "these hotkeys are already registered by another app: {}. Close that app, or change \
+             the chords in bench/config/*.toml (and --hotkey if you pass it).",
+            taken
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         );
     }
     Ok(())
