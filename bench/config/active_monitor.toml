@@ -1,0 +1,21 @@
+# pick-bench config template for the `active_monitor` scope.
+#
+# Copied into an isolated %APPDATA%\jumpkey\config.toml for each run, so
+# the benchmark never reads or changes your own settings. Anything not
+# listed here uses jumpkey's defaults.
+#
+# The chords are deliberately unusual so they don't collide with other
+# apps (PowerToys etc.): a collision makes jumpkey show a blocking
+# message box at startup. pick-bench checks all three are free before it
+# starts and presses `pick_element` (unless --hotkey overrides it).
+
+[hotkeys]
+pick_element = "Ctrl+Alt+Shift+F10"
+pick_window = "Ctrl+Alt+Shift+F11"
+open_settings = "Ctrl+Alt+Shift+F12"
+
+[scope]
+mode = "active_monitor"
+
+[startup]
+launch_at_startup = false

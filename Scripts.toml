@@ -8,6 +8,9 @@ release = "cargo build --release"
 install = "cargo install --path . --locked --force"
 test = { command = "cargo test --all-features", env = { RUST_LOG = "warn" } }
 doc = "cargo doc --no-deps --open"
+# Element-picker benchmark (see bench/README.md). Quit your everyday
+# jumpkey first. Pass options with `--env ARGS="--scenario dense-list"`.
+pick-bench = { interpreter = "powershell", command = "cargo build --release; if ($LASTEXITCODE -ne 0) { exit 1 }; cargo run --release -p pick-bench -- $($env:ARGS -split ' ')" }
 
 # ---------------------------------------------------------------------------
 # Windows installer (MSI) — produces target/wix/Jumpkey-<version>-x86_64.msi

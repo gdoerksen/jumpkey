@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: long feed</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0 auto; max-width: 720px; }
+  article { border: 1px solid #ddd; border-radius: 8px; margin: 12px; padding: 12px; }
+  article h2 { font-size: 15px; margin: 0 0 6px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  details { margin-top: 6px; }
+</style>
+</head>
+<body>
+<!-- 300 posts, almost all off-screen. Tests how much walking time goes
+     to nodes that can never get a label (review #41). Deterministic. -->
+<main id="feed"></main>
+<script>
+  const feed = document.getElementById("feed");
+  let seed = 777;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const lorem = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore".split(" ");
+  for (let i = 0; i < 300; i++) {
+    const a = document.createElement("article");
+    const text = Array.from({ length: 30 + rnd(40) }, () => lorem[rnd(lorem.length)]).join(" ");
+    a.innerHTML =
+      `<h2><a href="#post-${i + 1}">Post ${i + 1}</a> by <a href="#user-${rnd(50)}">user${rnd(50)}</a></h2>` +
+      `<p>${text}</p>` +
+      `<div class="actions"><button>Like</button><button>Reply</button><button>Share</button>` +
+      `<button aria-label="More options for post ${i + 1}">…</button></div>` +
+      `<details><summary>${2 + rnd(20)} comments</summary>` +
+      Array.from({ length: 3 }, (_, j) => `<p><a href="#c-${i}-${j}">comment ${j + 1}</a></p>`).join("") +
+      `</details>`;
+    feed.appendChild(a);
+  }
+</script>
+</body>
+</html>

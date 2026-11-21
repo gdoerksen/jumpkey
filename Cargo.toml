@@ -13,6 +13,12 @@ readme = "README.md"
 keywords = ["keyboard", "accessibility", "productivity", "automation", "hotkey"]
 categories = ["accessibility", "gui", "os"]
 
+# The root package is the default member, so plain `cargo build` / `cargo test`
+# at the repo root still only touch jumpkey itself. The benchmark harness is a
+# separate binary that drives jumpkey.exe from outside (see bench/README.md).
+[workspace]
+members = [".", "tools/pick-bench"]
+
 [dependencies]
 anyhow = "1"
 tracing = "0.1"
