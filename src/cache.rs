@@ -22,6 +22,7 @@
 //! the map from accumulating long-dead HWNDs).
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,43 @@ use crate::Element;
 /// path hash, …) can do likewise. Using a dumb integer here keeps this
 /// module free of `cfg`-gated platform types.
 pub type WindowKey = u64;
+
+/// Identifies one generation of element IDs: the ID table a backend
+/// had when it minted a cache entry's [`crate::ElementId`]s.
+///
+/// IDs are only meaningful to the backend (and the table) that created
+/// them. Two backends share this cache (the hotkey path and the
+/// cache-warming thread), and a backend can reset its table, after
+/// which old ID numbers are reused for different elements. A backend
+/// takes a fresh `Generation` whenever it starts a new ID table and
+/// stores it with every entry it inserts; [`CacheManager::lookup`] only
+/// returns entries from the caller's current generation. Generations
+/// are unique across the whole process, so one comparison covers both
+/// "another backend made this" and "made before my last reset".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Generation(u64);
+
+impl Generation {
+    /// A generation no other caller has ever received.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
+/// Result of [`CacheManager::lookup`].
+#[derive(Debug)]
+pub enum Lookup {
+    /// A fresh entry from the caller's generation; its IDs are valid
+    /// for the caller.
+    Hit(Arc<[Element]>),
+    /// A fresh entry exists, but its IDs belong to another generation
+    /// (another backend, or before the caller reset its ID table).
+    /// The caller must search again; the entry is left in place.
+    OtherGeneration,
+    /// No usable entry: none cached, expired, or caching disabled.
+    Miss,
+}
 
 /// Pluggable monotonic clock so unit tests don't have to sleep.
 ///
@@ -71,6 +109,8 @@ pub struct CacheEntry {
     /// When this entry was inserted, used to compute age against the
     /// configured TTL.
     pub captured_at: Instant,
+    /// The ID generation the elements' IDs belong to.
+    pub generation: Generation,
 }
 
 /// In-memory cache of [`CacheEntry`]s keyed by [`WindowKey`].
@@ -118,32 +158,53 @@ impl<C: Clock> CacheManager<C> {
         }
     }
 
-    /// Look up `key`. Returns `Some(Arc<[Element]>)` when there's an
-    /// entry younger than `ttl_ms`, `None` otherwise. Stale entries
-    /// are removed in passing so subsequent calls don't pay the
-    /// freshness check. The returned `Arc` is a refcount bump — no
-    /// allocation, no element copies — so big browser caches don't
-    /// pay an O(N) hit on every cache lookup.
-    pub fn get(&mut self, key: WindowKey) -> Option<Arc<[Element]>> {
+    /// Look up `key` for a caller whose current ID generation is
+    /// `generation`. Returns [`Lookup::Hit`] only for an entry younger
+    /// than `ttl_ms` *and* from that generation, so the caller can use
+    /// its IDs directly. Stale entries are removed in passing. A hit's
+    /// `Arc` is a refcount bump: no allocation, no element copies.
+    pub fn lookup(&mut self, key: WindowKey, generation: Generation) -> Lookup {
         if !self.enabled {
-            return None;
+            return Lookup::Miss;
         }
         let now = self.clock.now();
         match self.entries.get(&key) {
             Some(entry) if now.duration_since(entry.captured_at) <= self.ttl => {
-                tracing::debug!(
-                    key,
-                    age_ms = now.duration_since(entry.captured_at).as_millis() as u64,
-                    "cache hit"
-                );
-                Some(Arc::clone(&entry.elements))
+                let age_ms = now.duration_since(entry.captured_at).as_millis() as u64;
+                if entry.generation == generation {
+                    tracing::debug!(key, age_ms, "cache hit");
+                    Lookup::Hit(Arc::clone(&entry.elements))
+                } else {
+                    tracing::debug!(key, age_ms, "cache entry from another ID generation");
+                    Lookup::OtherGeneration
+                }
             }
             Some(_) => {
                 tracing::debug!(key, "cache entry expired");
                 self.entries.remove(&key);
-                None
+                Lookup::Miss
             }
-            None => None,
+            None => Lookup::Miss,
+        }
+    }
+
+    /// True when `key` has an entry younger than `ttl_ms`, from any
+    /// generation. The cache-warming thread uses this to skip windows
+    /// that are already cached, so it doesn't replace the hotkey
+    /// path's own (usable) entry with one the hotkey path can't use.
+    /// Stale entries are removed in passing.
+    pub fn has_fresh(&mut self, key: WindowKey) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        let now = self.clock.now();
+        match self.entries.get(&key) {
+            Some(entry) if now.duration_since(entry.captured_at) <= self.ttl => true,
+            Some(_) => {
+                self.entries.remove(&key);
+                false
+            }
+            None => false,
         }
     }
 
@@ -154,8 +215,9 @@ impl<C: Clock> CacheManager<C> {
     ///
     /// The slice is moved (not cloned) into the entry; the same
     /// `Arc` is then handed back from every subsequent
-    /// [`Self::get`] until the entry expires.
-    pub fn insert(&mut self, key: WindowKey, elements: Arc<[Element]>) {
+    /// [`Self::lookup`] until the entry expires. `generation` must be
+    /// the inserting backend's current ID generation.
+    pub fn insert(&mut self, key: WindowKey, elements: Arc<[Element]>, generation: Generation) {
         if !self.enabled {
             return;
         }
@@ -165,6 +227,7 @@ impl<C: Clock> CacheManager<C> {
             CacheEntry {
                 elements,
                 captured_at,
+                generation,
             },
         );
     }
@@ -283,6 +346,35 @@ mod tests {
         CacheManager::with_clock(ttl_ms, true, MockClock::new())
     }
 
+    thread_local! {
+        /// The generation the single-generation tests insert and look
+        /// up with.
+        static GEN: Generation = Generation::next();
+    }
+
+    fn generation() -> Generation {
+        GEN.with(|g| *g)
+    }
+
+    /// Single-generation helpers so the TTL tests read as before.
+    trait SameGeneration {
+        fn put(&mut self, key: WindowKey, elements: Arc<[Element]>);
+        fn get(&mut self, key: WindowKey) -> Option<Arc<[Element]>>;
+    }
+
+    impl SameGeneration for CacheManager<MockClock> {
+        fn put(&mut self, key: WindowKey, elements: Arc<[Element]>) {
+            self.insert(key, elements, generation());
+        }
+        fn get(&mut self, key: WindowKey) -> Option<Arc<[Element]>> {
+            match self.lookup(key, generation()) {
+                Lookup::Hit(e) => Some(e),
+                Lookup::OtherGeneration => panic!("unexpected other generation"),
+                Lookup::Miss => None,
+            }
+        }
+    }
+
     #[test]
     fn empty_cache_returns_none() {
         let mut c = cache(500);
@@ -296,7 +388,7 @@ mod tests {
     #[test]
     fn insert_then_get_round_trips() {
         let mut c = cache(500);
-        c.insert(1, arc_of(vec![fake_element(1), fake_element(2)]));
+        c.put(1, arc_of(vec![fake_element(1), fake_element(2)]));
         let got = c.get(1).expect("fresh entry should hit");
         assert_eq!(got.len(), 2);
     }
@@ -304,7 +396,7 @@ mod tests {
     #[test]
     fn entry_expires_after_ttl() {
         let mut c = cache(100);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.clock.advance(Duration::from_millis(101));
         assert!(c.get(1).is_none(), "entry past TTL must miss");
     }
@@ -312,7 +404,7 @@ mod tests {
     #[test]
     fn entry_within_ttl_hits() {
         let mut c = cache(500);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.clock.advance(Duration::from_millis(499));
         assert!(c.get(1).is_some(), "entry inside TTL must hit");
     }
@@ -320,7 +412,7 @@ mod tests {
     #[test]
     fn invalidate_drops_entry() {
         let mut c = cache(500);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.invalidate(1);
         assert!(c.get(1).is_none());
     }
@@ -335,8 +427,8 @@ mod tests {
     #[test]
     fn clear_empties_cache() {
         let mut c = cache(500);
-        c.insert(1, arc_of(vec![fake_element(1)]));
-        c.insert(2, arc_of(vec![fake_element(2)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
+        c.put(2, arc_of(vec![fake_element(2)]));
         c.clear();
         assert!(c.is_empty());
     }
@@ -344,7 +436,7 @@ mod tests {
     #[test]
     fn disabled_cache_misses_everything() {
         let mut c: CacheManager<MockClock> = CacheManager::with_clock(500, false, MockClock::new());
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         assert!(c.get(1).is_none());
         assert_eq!(c.len(), 0, "insert should be a no-op when disabled");
     }
@@ -352,7 +444,7 @@ mod tests {
     #[test]
     fn reconfigure_disabling_clears_entries() {
         let mut c = cache(500);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.reconfigure(500, false);
         assert!(c.is_empty());
         assert!(!c.is_enabled());
@@ -361,9 +453,9 @@ mod tests {
     #[test]
     fn sweep_evicts_stale_keeps_fresh() {
         let mut c = cache(100);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.clock.advance(Duration::from_millis(150));
-        c.insert(2, arc_of(vec![fake_element(2)]));
+        c.put(2, arc_of(vec![fake_element(2)]));
         c.sweep();
         assert!(c.get(1).is_none(), "stale entry should be swept");
         assert!(c.get(2).is_some(), "fresh entry should survive sweep");
@@ -372,7 +464,7 @@ mod tests {
     #[test]
     fn get_evicts_stale_lazily() {
         let mut c = cache(100);
-        c.insert(1, arc_of(vec![fake_element(1)]));
+        c.put(1, arc_of(vec![fake_element(1)]));
         c.clock.advance(Duration::from_millis(150));
         let _ = c.get(1);
         assert_eq!(c.len(), 0, "stale entry should be evicted by get()");
@@ -382,11 +474,77 @@ mod tests {
     fn cache_hit_is_refcount_bump_not_clone() {
         let mut c = cache(500);
         let original = arc_of(vec![fake_element(1), fake_element(2)]);
-        c.insert(1, Arc::clone(&original));
+        c.put(1, Arc::clone(&original));
         let got = c.get(1).expect("fresh entry should hit");
         assert!(
             Arc::ptr_eq(&got, &original),
             "cache hit must hand back the same allocation"
         );
+    }
+
+    #[test]
+    fn entry_from_another_generation_is_rejected() {
+        // The cache-warming thread's backend inserts with its own
+        // generation; the hotkey backend must not accept those IDs.
+        let mut c = cache(500);
+        let warmer = Generation::next();
+        c.insert(1, arc_of(vec![fake_element(0)]), warmer);
+        assert!(matches!(c.lookup(1, generation()), Lookup::OtherGeneration));
+        // Left in place for its owner.
+        assert!(matches!(c.lookup(1, warmer), Lookup::Hit(_)));
+    }
+
+    #[test]
+    fn entry_from_before_a_reset_is_rejected() {
+        // A backend that resets its ID table reuses ID numbers for
+        // different elements, so its own older entries become invalid.
+        let mut c = cache(500);
+        let before = Generation::next();
+        c.insert(1, arc_of(vec![fake_element(0)]), before);
+        let after = Generation::next();
+        assert!(matches!(c.lookup(1, after), Lookup::OtherGeneration));
+    }
+
+    #[test]
+    fn expiry_wins_over_generation_mismatch() {
+        let mut c = cache(100);
+        c.insert(1, arc_of(vec![fake_element(0)]), Generation::next());
+        c.clock.advance(Duration::from_millis(101));
+        assert!(matches!(c.lookup(1, generation()), Lookup::Miss));
+        assert_eq!(c.len(), 0, "expired entry should be evicted");
+    }
+
+    #[test]
+    fn disabled_cache_misses_any_generation() {
+        let mut c: CacheManager<MockClock> = CacheManager::with_clock(500, false, MockClock::new());
+        let g = Generation::next();
+        c.insert(1, arc_of(vec![fake_element(0)]), g);
+        assert!(matches!(c.lookup(1, g), Lookup::Miss));
+    }
+
+    #[test]
+    fn has_fresh_ignores_generation_and_respects_ttl() {
+        let mut c = cache(100);
+        assert!(!c.has_fresh(1));
+        c.insert(1, arc_of(vec![fake_element(0)]), Generation::next());
+        assert!(c.has_fresh(1), "any generation counts as cached");
+        c.clock.advance(Duration::from_millis(101));
+        assert!(!c.has_fresh(1));
+        assert_eq!(c.len(), 0, "expired entry should be evicted");
+    }
+
+    #[test]
+    fn generations_are_unique_across_threads() {
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| (0..1000).map(|_| Generation::next()).collect::<Vec<_>>())
+            })
+            .collect();
+        let mut all = std::collections::HashSet::new();
+        for h in handles {
+            for g in h.join().unwrap() {
+                assert!(all.insert(g), "duplicate generation");
+            }
+        }
     }
 }

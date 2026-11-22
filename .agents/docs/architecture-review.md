@@ -131,7 +131,7 @@ for features that need to react during a pick.
 
 ### 6. Element IDs are tied to backend state, and the cache check is unreliable
 
-> **Status (2026-11-21):** open, not yet reproduced (GitHub issue #22 on `gdoerksen/jumpkey`).
+> **Status (2026-11-21):** **quick fix done** (issue #22 on `gdoerksen/jumpkey`). Reproduced live first: pick in B, pick in A (the hotkey backend resets its table), back to B → `served from cache` with B's IDs now naming A's elements. The fix tags each cache entry with a process-unique ID generation (`cache::Generation`), renewed on every reset, and only accepts hits from the current one. Found along the way: the warming thread's own check almost always accepted entries (its table never reset, so every ID number "existed"), so its walks after a foreground change or move were mostly no-ops, and its table pinned every UIA element it ever saw. It now skips windows with any fresh entry (`warm_window`) and starts a fresh table per walk. The thorough fix (`Snapshot`, option 3) is still open.
 
 `ElementId` is only meaningful inside the `WindowsBackend` instance that
 created it. That instance's map from ID to UIA element changes on every
@@ -663,9 +663,11 @@ on the main thread. The warmed entry only helps if you press the hotkey
 within half a second of switching, or when retrying with Esc.
 
 Then there are three more problems on top of that:
-- When the entry *is* fresh, #22's check is a coin flip: either it
-  rejects the warmed entry (re-search anyway) or wrongly accepts it (wrong
-  element).
+- When the entry *is* fresh, #22's check was a coin flip: either it
+  rejected the warmed entry (re-search anyway) or wrongly accepted it
+  (wrong element). _(2026-11-21: fixed; the warmed entry is now always
+  rejected, so it can only help once the cache shares UIA elements,
+  roadmap step 6.)_
 - #10 has the thread re-searching background windows the user isn't
   using.
 - #11 multi-window scopes skip the cache for everything except the
