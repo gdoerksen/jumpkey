@@ -28,9 +28,11 @@ use windows::Win32::Graphics::Gdi::{
     GGI_MARK_NONEXISTING_GLYPHS,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, HKL, MAPVK_VSC_TO_VK_EX,
+    GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, HKL, MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowThreadProcessId, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP,
+};
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 
@@ -39,6 +41,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 /// overlay agree no matter which thread they run on.
 static CAPTURED_HKL: AtomicIsize = AtomicIsize::new(0);
 
+use crate::input::{Key, NamedKey};
 use crate::keyboard::{Layout, PhysKey, Row};
 
 /// `ToUnicodeEx` flag: don't change keyboard state (Windows 10 1607+).
@@ -107,6 +110,69 @@ const SCANCODES: &[(u32, PhysKey)] = &{
 /// Physical position of a set-1 scan code, if it's on the main block.
 pub fn phys_for_scancode(sc: u32) -> Option<PhysKey> {
     SCANCODES.iter().find(|(s, _)| *s == sc).map(|(_, k)| *k)
+}
+
+/// Platform-neutral [`Key`] for a set-1 scan code. `extended` is the
+/// `E0` prefix (`LLKHF_EXTENDED` in a low-level hook), which tells the
+/// arrows, Home/End, Delete and right Ctrl/Alt apart from the numpad and
+/// left keys sharing their codes. Unknown keys become [`Key::Other`] with
+/// `0xE000 | sc` for extended codes.
+pub fn key_from_scancode(sc: u32, extended: bool) -> Key {
+    use NamedKey::*;
+    let named = match (sc, extended) {
+        (0x01, false) => Some(Esc),
+        (0x0F, false) => Some(Tab),
+        (0x1C, _) => Some(Enter), // main Enter, or numpad Enter (extended)
+        (0x0E, false) => Some(Backspace),
+        (0x39, false) => Some(Space),
+        (0x48, true) => Some(Up),
+        (0x50, true) => Some(Down),
+        (0x4B, true) => Some(Left),
+        (0x4D, true) => Some(Right),
+        (0x47, true) => Some(Home),
+        (0x4F, true) => Some(End),
+        (0x49, true) => Some(PageUp),
+        (0x51, true) => Some(PageDown),
+        (0x53, true) => Some(Delete),
+        (0x2A | 0x36, false) => Some(Shift),
+        (0x1D, _) => Some(Ctrl),
+        (0x38, _) => Some(Alt),
+        (0x5B | 0x5C, true) => Some(Meta),
+        (0x3B..=0x44, false) => Some(F((sc - 0x3B + 1) as u8)),
+        (0x57, false) => Some(F(11)),
+        (0x58, false) => Some(F(12)),
+        (0x64..=0x6E, false) => Some(F((sc - 0x64 + 13) as u8)),
+        (0x76, false) => Some(F(24)),
+        _ => None,
+    };
+    if let Some(n) = named {
+        return Key::Named(n);
+    }
+    if !extended {
+        if let Some(p) = phys_for_scancode(sc) {
+            return Key::Phys(p);
+        }
+    }
+    Key::Other(if extended {
+        0xE000 | sc as u16
+    } else {
+        sc as u16
+    })
+}
+
+/// [`Key`] and "is it a press" for one `WH_KEYBOARD_LL` event. Input sent
+/// with a virtual-key code only (`SendInput` without a scan code) arrives
+/// with scan code 0; the scan code is then looked up from the VK.
+pub fn key_from_ll(info: &KBDLLHOOKSTRUCT) -> (Key, bool) {
+    let down = (info.flags.0 & LLKHF_UP.0) == 0;
+    let mut sc = info.scanCode;
+    let mut extended = (info.flags.0 & LLKHF_EXTENDED.0) != 0;
+    if sc == 0 {
+        let mapped = unsafe { MapVirtualKeyExW(info.vkCode, MAPVK_VK_TO_VSC_EX, None) };
+        sc = mapped & 0xFF;
+        extended = (mapped >> 8) == 0xE0 || (mapped >> 8) == 0xE1;
+    }
+    (key_from_scancode(sc, extended), down)
 }
 
 /// Read the keyboard layout of the foreground window's thread (falling
@@ -284,6 +350,76 @@ mod tests {
         assert_eq!(single_char(2, &[b'a' as u16, b'b' as u16]), None);
         assert_eq!(single_char(1, &[b'A' as u16]), Some('a'));
         assert_eq!(single_char(1, &[b' ' as u16]), None);
+    }
+
+    #[test]
+    fn scancodes_map_to_named_keys() {
+        use NamedKey::*;
+        let cases = [
+            (0x01, false, Esc),
+            (0x0F, false, Tab),
+            (0x1C, false, Enter),
+            (0x1C, true, Enter),
+            (0x0E, false, Backspace),
+            (0x39, false, Space),
+            (0x48, true, Up),
+            (0x50, true, Down),
+            (0x4B, true, Left),
+            (0x4D, true, Right),
+            (0x47, true, Home),
+            (0x4F, true, End),
+            (0x49, true, PageUp),
+            (0x51, true, PageDown),
+            (0x53, true, Delete),
+            (0x2A, false, Shift),
+            (0x36, false, Shift),
+            (0x1D, false, Ctrl),
+            (0x1D, true, Ctrl),
+            (0x38, false, Alt),
+            (0x38, true, Alt),
+            (0x5B, true, Meta),
+            (0x5C, true, Meta),
+            (0x3B, false, F(1)),
+            (0x44, false, F(10)),
+            (0x57, false, F(11)),
+            (0x58, false, F(12)),
+            (0x64, false, F(13)),
+            (0x6E, false, F(23)),
+            (0x76, false, F(24)),
+        ];
+        for (sc, ext, want) in cases {
+            assert_eq!(
+                key_from_scancode(sc, ext),
+                Key::Named(want),
+                "{sc:#x} ext={ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn extended_flag_separates_numpad_from_navigation() {
+        // Numpad 8 / 2 / 4 / 6 share codes with the arrows.
+        assert_eq!(key_from_scancode(0x48, false), Key::Other(0x48));
+        assert_eq!(key_from_scancode(0x48, true), Key::Named(NamedKey::Up));
+        assert_eq!(key_from_scancode(0x53, false), Key::Other(0x53));
+        // Extended codes that aren't named keep the E0 marker.
+        assert_eq!(key_from_scancode(0x5D, true), Key::Other(0xE05D));
+    }
+
+    #[test]
+    fn main_block_maps_to_physical_keys() {
+        assert_eq!(
+            key_from_scancode(0x24, false),
+            Key::Phys(PhysKey::new(Row::Home, 6))
+        );
+        assert_eq!(
+            key_from_scancode(0x02, false),
+            Key::Phys(PhysKey::new(Row::Number, 0))
+        );
+        // Every scancode in the table is a physical key, never a named one.
+        for (sc, k) in SCANCODES {
+            assert_eq!(key_from_scancode(*sc, false), Key::Phys(*k));
+        }
     }
 
     #[test]

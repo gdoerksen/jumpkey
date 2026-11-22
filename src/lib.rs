@@ -10,7 +10,7 @@
 //!
 //! - The **core** (every module except [`windows`]) is platform-free: core
 //!   types and traits ([`Action`], [`Backend`], [`Element`], [`HintEngine`]),
-//!   config, keyboard model, layout. It must build and pass its tests on
+//!   config, keyboard model and key events ([`input`]), layout. It must build and pass its tests on
 //!   Linux (`cargo script check-linux`, CI).
 //! - The **Windows backend** lives in [`windows`], behind `cfg(windows)`.
 //!   Another platform would get its own `cfg`-gated module next to it.
@@ -23,6 +23,7 @@ pub mod backend;
 pub mod cache;
 pub mod config;
 pub mod hint;
+pub mod input;
 pub mod keyboard;
 pub mod layout_order;
 pub mod model;
@@ -35,6 +36,7 @@ pub use action::Action;
 pub use backend::Backend;
 pub use config::Config;
 pub use hint::{ConsecutiveKeys, HintEngine, HintStrategy, DEFAULT_ALPHABET};
+pub use input::{Key, KeyEvent, KeyTracker, Mods, NamedKey};
 pub use keyboard::{Geometry, Layout, LayoutChoice};
 pub use layout_order::HintOrder;
 pub use model::{Bounds, Element, ElementId, Role};
