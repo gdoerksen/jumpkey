@@ -113,6 +113,34 @@ pub struct KeyEvent {
     pub repeat: bool,
 }
 
+impl KeyEvent {
+    /// True when Ctrl, Alt or Meta is held (Shift alone doesn't count: it
+    /// is a typing modifier).
+    pub fn has_command_mod(&self) -> bool {
+        self.mods.ctrl || self.mods.alt || self.mods.meta
+    }
+}
+
+/// A hotkey chord as the core sees it: modifiers plus one key. The
+/// platform layer builds these from the config strings
+/// (`crate::windows::hotkey::chord_from_str` on Windows), so a mode can
+/// recognise jumpkey's own hotkeys inside its keyboard hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Chord {
+    /// Modifiers that must be held, exactly (no more, no fewer).
+    pub mods: Mods,
+    /// The non-modifier key.
+    pub key: Key,
+}
+
+impl Chord {
+    /// True when `ev` is a press (not a release, not auto-repeat) of this
+    /// chord's key with exactly its modifiers held.
+    pub fn matches(&self, ev: &KeyEvent) -> bool {
+        ev.down && !ev.repeat && ev.key == self.key && ev.mods == self.mods
+    }
+}
+
 /// Turns raw `(key, down)` pairs into [`KeyEvent`]s by remembering which
 /// keys are held. Low-level hooks report neither repeat nor modifier
 /// state reliably, so the core tracks both.
@@ -256,6 +284,36 @@ mod tests {
         t.reset();
         assert!(t.mods().is_empty());
         assert!(!t.track(J, true).repeat, "J is no longer held");
+    }
+
+    #[test]
+    fn chord_matches_exact_mods_on_first_press_only() {
+        let chord = Chord {
+            mods: Mods {
+                ctrl: true,
+                alt: true,
+                ..Mods::NONE
+            },
+            key: J,
+        };
+        let mut t = KeyTracker::new();
+        t.track(CTRL, true);
+        t.track(Key::Named(NamedKey::Alt), true);
+        let press = t.track(J, true);
+        assert!(chord.matches(&press));
+        assert!(!chord.matches(&t.track(J, true)), "repeat");
+        assert!(!chord.matches(&t.track(J, false)), "release");
+        t.track(SHIFT, true);
+        assert!(!chord.matches(&t.track(J, true)), "extra Shift");
+    }
+
+    #[test]
+    fn command_mod_excludes_shift() {
+        let mut t = KeyTracker::new();
+        t.track(SHIFT, true);
+        assert!(!t.track(J, true).has_command_mod());
+        t.track(CTRL, true);
+        assert!(t.track(J, true).has_command_mod());
     }
 
     #[test]

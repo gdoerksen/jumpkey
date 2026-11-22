@@ -77,6 +77,8 @@ windows = { version = "0.58", features = [
     # — feeds HWNDs to the Phase-4 pre-warm worker so the hotkey-time
     # cache is already hot when the user fires the chord.
     "Win32_UI_Accessibility",
+    # WTSRegisterSessionNotification: scroll mode ends on session lock.
+    "Win32_System_RemoteDesktop",
 ] }
 uiautomation = "0.24"
 # Phase 5: per-process-group parallel window walks. Most of the time

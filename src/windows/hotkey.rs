@@ -20,6 +20,8 @@ use global_hotkey::{
 };
 
 use crate::config::HotkeyBindings;
+use crate::input::{Chord, Key, Mods, NamedKey};
+use crate::keyboard::Layout;
 
 /// What a registered chord should *do*. Decoupled from the specific
 /// modifier+key combination so we can rebind defaults later (or load from
@@ -270,6 +272,132 @@ pub fn parse_hotkey(s: &str) -> Result<(Modifiers, Code)> {
     Ok((modifiers, code))
 }
 
+/// Parse a chord string into the core's [`Chord`], for matching inside a
+/// low-level keyboard hook. Same syntax as [`parse_hotkey`], so one config
+/// string feeds both `RegisterHotKey` and the hook.
+pub fn chord_from_str(s: &str) -> Result<Chord> {
+    let (mods, code) = parse_hotkey(s)?;
+    let key =
+        key_from_code(code).ok_or_else(|| anyhow::anyhow!("key in '{s}' has no hook mapping"))?;
+    Ok(Chord {
+        mods: Mods {
+            shift: mods.contains(Modifiers::SHIFT),
+            ctrl: mods.contains(Modifiers::CONTROL),
+            alt: mods.contains(Modifiers::ALT),
+            meta: mods.contains(Modifiers::META),
+        },
+        key,
+    })
+}
+
+/// The core's [`Key`] for a `global_hotkey` key code. `Code` names a
+/// physical position (W3C `KeyboardEvent.code`, US-QWERTY names), so the
+/// main-block keys map to [`Key::Phys`] through the QWERTY table and
+/// match whatever layout is active, exactly as `RegisterHotKey` does.
+pub fn key_from_code(code: Code) -> Option<Key> {
+    use NamedKey as N;
+    let named = match code {
+        Code::Space => Some(N::Space),
+        Code::Enter => Some(N::Enter),
+        Code::Tab => Some(N::Tab),
+        Code::Escape => Some(N::Esc),
+        Code::Backspace => Some(N::Backspace),
+        Code::Delete => Some(N::Delete),
+        Code::Home => Some(N::Home),
+        Code::End => Some(N::End),
+        Code::PageUp => Some(N::PageUp),
+        Code::PageDown => Some(N::PageDown),
+        Code::ArrowLeft => Some(N::Left),
+        Code::ArrowRight => Some(N::Right),
+        Code::ArrowUp => Some(N::Up),
+        Code::ArrowDown => Some(N::Down),
+        Code::F1 => Some(N::F(1)),
+        Code::F2 => Some(N::F(2)),
+        Code::F3 => Some(N::F(3)),
+        Code::F4 => Some(N::F(4)),
+        Code::F5 => Some(N::F(5)),
+        Code::F6 => Some(N::F(6)),
+        Code::F7 => Some(N::F(7)),
+        Code::F8 => Some(N::F(8)),
+        Code::F9 => Some(N::F(9)),
+        Code::F10 => Some(N::F(10)),
+        Code::F11 => Some(N::F(11)),
+        Code::F12 => Some(N::F(12)),
+        Code::F13 => Some(N::F(13)),
+        Code::F14 => Some(N::F(14)),
+        Code::F15 => Some(N::F(15)),
+        Code::F16 => Some(N::F(16)),
+        Code::F17 => Some(N::F(17)),
+        Code::F18 => Some(N::F(18)),
+        Code::F19 => Some(N::F(19)),
+        Code::F20 => Some(N::F(20)),
+        Code::F21 => Some(N::F(21)),
+        Code::F22 => Some(N::F(22)),
+        Code::F23 => Some(N::F(23)),
+        Code::F24 => Some(N::F(24)),
+        _ => None,
+    };
+    if let Some(n) = named {
+        return Some(Key::Named(n));
+    }
+    // Insert has no NamedKey; match what `key_from_scancode` reports for
+    // it (extended scan code 0x52).
+    if code == Code::Insert {
+        return Some(Key::Other(0xE052));
+    }
+    let qwerty = match code {
+        Code::KeyA => 'a',
+        Code::KeyB => 'b',
+        Code::KeyC => 'c',
+        Code::KeyD => 'd',
+        Code::KeyE => 'e',
+        Code::KeyF => 'f',
+        Code::KeyG => 'g',
+        Code::KeyH => 'h',
+        Code::KeyI => 'i',
+        Code::KeyJ => 'j',
+        Code::KeyK => 'k',
+        Code::KeyL => 'l',
+        Code::KeyM => 'm',
+        Code::KeyN => 'n',
+        Code::KeyO => 'o',
+        Code::KeyP => 'p',
+        Code::KeyQ => 'q',
+        Code::KeyR => 'r',
+        Code::KeyS => 's',
+        Code::KeyT => 't',
+        Code::KeyU => 'u',
+        Code::KeyV => 'v',
+        Code::KeyW => 'w',
+        Code::KeyX => 'x',
+        Code::KeyY => 'y',
+        Code::KeyZ => 'z',
+        Code::Digit0 => '0',
+        Code::Digit1 => '1',
+        Code::Digit2 => '2',
+        Code::Digit3 => '3',
+        Code::Digit4 => '4',
+        Code::Digit5 => '5',
+        Code::Digit6 => '6',
+        Code::Digit7 => '7',
+        Code::Digit8 => '8',
+        Code::Digit9 => '9',
+        Code::Comma => ',',
+        Code::Period => '.',
+        Code::Slash => '/',
+        Code::Backslash => '\\',
+        Code::Semicolon => ';',
+        Code::Quote => '\'',
+        Code::BracketLeft => '[',
+        Code::BracketRight => ']',
+        Code::Minus => '-',
+        Code::Equal => '=',
+        Code::Backquote => '`',
+        _ => return None,
+    };
+    Layout::qwerty_ref().key_of(qwerty).map(Key::Phys)
+}
+
 fn parse_modifier(s: &str) -> Result<Modifiers> {
     match s.to_ascii_lowercase().as_str() {
         "ctrl" | "control" => Ok(Modifiers::CONTROL),
@@ -487,6 +615,75 @@ mod tests {
             assert_eq!(nc, *expected, "{named} code");
             assert_eq!(lc, nc, "{literal} should equal {named}");
         }
+    }
+
+    /// Every key the chord parser accepts must also be matchable in the
+    /// keyboard hook, or a configured hotkey would silently stop working
+    /// while a mode is active.
+    #[test]
+    fn every_parseable_key_maps_to_a_hook_key() {
+        let mut names: Vec<String> = ('A'..='Z').chain('0'..='9').map(String::from).collect();
+        names.extend((1..=24).map(|n| format!("F{n}")));
+        for n in [
+            "Space",
+            "Enter",
+            "Tab",
+            "Esc",
+            "Backspace",
+            "Delete",
+            "Insert",
+            "Home",
+            "End",
+            "PageUp",
+            "PageDown",
+            "Left",
+            "Right",
+            "Up",
+            "Down",
+            ",",
+            ".",
+            "/",
+            "\\",
+            ";",
+            "'",
+            "[",
+            "]",
+            "-",
+            "=",
+            "`",
+        ] {
+            names.push(n.to_string());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for n in &names {
+            let chord = chord_from_str(&format!("Ctrl+{n}"))
+                .unwrap_or_else(|e| panic!("{n} has no hook key: {e}"));
+            assert!(seen.insert(chord.key), "{n} maps to a key already used");
+        }
+    }
+
+    #[test]
+    fn chord_from_str_matches_scancode_keys() {
+        use crate::windows::keyboard_layout::key_from_scancode;
+        let c = chord_from_str("Ctrl+Alt+J").unwrap();
+        assert!(c.mods.ctrl && c.mods.alt && !c.mods.shift && !c.mods.meta);
+        assert_eq!(c.key, key_from_scancode(0x24, false), "J");
+        assert_eq!(
+            chord_from_str("Ctrl+Alt+Shift+F9").unwrap().key,
+            key_from_scancode(0x43, false)
+        );
+        assert_eq!(
+            chord_from_str("Ctrl+Space").unwrap().key,
+            key_from_scancode(0x39, false)
+        );
+        assert_eq!(
+            chord_from_str("Ctrl+Insert").unwrap().key,
+            key_from_scancode(0x52, true)
+        );
+        assert_eq!(
+            chord_from_str("Ctrl+,").unwrap().key,
+            key_from_scancode(0x33, false)
+        );
     }
 
     /// `Ctrl+\` plus surrounding whitespace — the kind of thing the
