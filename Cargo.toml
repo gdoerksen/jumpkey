@@ -119,13 +119,6 @@ codegen-units = 1
 strip = "symbols"
 opt-level = 3
 
-# docs.rs builds on Linux by default. Without this our entire `windows`
-# module would be cfg-gated out and the rendered docs would look empty.
-[package.metadata.docs.rs]
-default-target = "x86_64-pc-windows-msvc"
-targets = ["x86_64-pc-windows-msvc"]
-rustdoc-args = ["--cfg", "docsrs"]
-
 # cargo-wix configuration for the MSI installer. `cargo wix` builds
 # an MSI from `wix/main.wxs` and writes it to `target/wix/`. The
 # generated package supports silent install (`msiexec /i ... /qn`),
