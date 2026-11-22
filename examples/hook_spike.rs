@@ -714,13 +714,16 @@ mod spike {
         pids: HashSet<u32>,
     }
 
+    type SetupFn = Box<dyn Fn(&Env) -> Option<Target>>;
+    type OpenFn = Box<dyn Fn(&Env, &Target) -> bool>;
+
     struct Case {
         app: &'static str,
         menu: &'static str,
-        setup: Box<dyn Fn(&Env) -> Option<Target>>,
+        setup: SetupFn,
         /// The menu is drawn inside the window: also count its list items.
         in_window: bool,
-        open: Box<dyn Fn(&Env, &Target) -> bool>,
+        open: OpenFn,
     }
 
     struct Env {
