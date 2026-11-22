@@ -87,6 +87,7 @@ fully handled (after the action ran, or after Esc).
 | `scope` | Scope mode at the time. |
 | `count` | Hints shown. |
 | `outcome` | `picked`, `cancelled`, `empty` (nothing to show) or `error`. |
+| `cancel_by` | Only when `outcome` is `cancelled`: how the overlay was closed. `esc`: Esc pressed. `click`: focus moved away within 1 s of a mouse button press (a click outside the badges). `focus_lost`: focus moved away with no recent click (Alt+Tab, the Windows key, another window taking focus). `wheel`: the mouse wheel was turned. `quit`: jumpkey's message loop ended. `unknown`: none of these was recorded. |
 | `modifier` | Modifier on the completing keystroke: `none`, `ctrl`, `shift` (element picker). |
 | `keystrokes`, `backspaces` | Characters typed and backspaces pressed in the overlay. |
 | `hotkey_source` | `message`: `WM_HOTKEY` was seen by the main loop and `queue_ms` / the `hotkey` milestone are exact. `dispatch`: it arrived through another message loop (splash screen, Settings, an open overlay), so the `hotkey` milestone is the handler start. |

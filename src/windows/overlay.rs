@@ -62,8 +62,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     TranslateMessage, UnhookWindowsHookEx, UpdateLayeredWindow, CREATESTRUCTW, CS_HREDRAW,
     CS_VREDRAW, GWLP_USERDATA, HHOOK, IDC_ARROW, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
     SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
-    ULW_ALPHA, WH_MOUSE_LL, WM_KEYDOWN, WM_KILLFOCUS, WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    ULW_ALPHA, WH_MOUSE_LL, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_PAINT, WM_RBUTTONDOWN, WM_XBUTTONDOWN, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use super::label_text::{Coverage, Font, LabelText, Role, TextItem};
@@ -634,6 +635,49 @@ fn callout_candidates(
     out
 }
 
+/// Why an overlay closed without a pick, for telemetry (`cancel_by`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelReason {
+    /// Esc pressed.
+    Esc,
+    /// Focus moved away right after a mouse button press: the user
+    /// clicked outside the badges.
+    Click,
+    /// Focus moved away without a recent click (Alt+Tab, the Windows
+    /// key, another window taking focus).
+    FocusLost,
+    /// The mouse wheel was turned.
+    Wheel,
+    /// The message loop ended (`WM_QUIT`), e.g. jumpkey is exiting.
+    Quit,
+}
+
+impl CancelReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Esc => "esc",
+            Self::Click => "click",
+            Self::FocusLost => "focus_lost",
+            Self::Wheel => "wheel",
+            Self::Quit => "quit",
+        }
+    }
+}
+
+/// A focus loss this soon after a mouse button press counts as a click.
+/// Generous: the app under the pointer activates on button-down, well
+/// within this, while a separate Alt+Tab a second later doesn't count.
+const CLICK_TO_FOCUS_LOSS_MS: u64 = 1000;
+
+/// Classify a focus loss from the time since the last mouse button press
+/// during this pick (`None` = no press).
+fn focus_loss_reason(ms_since_button: Option<u64>) -> CancelReason {
+    match ms_since_button {
+        Some(ms) if ms <= CLICK_TO_FOCUS_LOSS_MS => CancelReason::Click,
+        _ => CancelReason::FocusLost,
+    }
+}
+
 struct OverlayState {
     laid: Vec<LaidHint>,
     style: HintStyle,
@@ -650,6 +694,10 @@ struct OverlayState {
     /// Esc pressed, or focus lost). Replaces the old DestroyWindow +
     /// PostQuitMessage flow now that the HWND is persistent.
     done: bool,
+    /// Why the overlay closed, when `selected` is `None`. Starts as
+    /// `Quit`: the only way out that doesn't set it is the message loop
+    /// ending.
+    cancel: CancelReason,
     /// Rasterised label (and extra-pill title) text, parallel to `laid`.
     /// Built once at pick start; frames just composite the masks.
     text: Vec<HintText>,
@@ -714,6 +762,7 @@ impl OverlayState {
             selected: None,
             modifier: PickModifier::None,
             done: false,
+            cancel: CancelReason::Quit,
             text,
             callout_geom,
             sprites,
@@ -993,6 +1042,7 @@ impl OverlayState {
     fn key_down(&mut self, vk: u32, scancode: u32) {
         if vk == VK_ESCAPE.0 as u32 {
             self.selected = None;
+            self.cancel = CancelReason::Esc;
             self.done = true;
             return;
         }
@@ -1729,6 +1779,13 @@ fn arrowhead_polygon(start: POINT, end: POINT) -> [POINT; 3] {
 unsafe extern "system" fn scroll_hook_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if code >= 0 {
         let msg = wp.0 as u32;
+        if matches!(
+            msg,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
+        ) {
+            // Only noted, never swallowed: the click still reaches the app.
+            LAST_BUTTON_DOWN.with(|c| c.set(Some(std::time::Instant::now())));
+        }
         if msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL_RAW {
             SCROLL_HOOK_TARGET.with(|cell| {
                 let hwnd = cell.get();
@@ -1778,7 +1835,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             // clobber a just-set `selected` back to `None` and silently
             // swallow the user's pick.
             if !state.done {
+                let since = LAST_BUTTON_DOWN
+                    .with(|c| c.get())
+                    .map(|t| t.elapsed().as_millis() as u64);
                 state.selected = None;
+                state.cancel = focus_loss_reason(since);
                 state.done = true;
             }
             LRESULT(0)
@@ -1787,6 +1848,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM)
             if !state.done {
                 tracing::debug!("overlay dismissed: scroll detected");
                 state.selected = None;
+                state.cancel = CancelReason::Wheel;
                 state.done = true;
             }
             LRESULT(0)
@@ -1869,6 +1931,9 @@ thread_local! {
 // inside `PersistentOverlay::run_pick`; null between picks.
 thread_local! {
     static SCROLL_HOOK_TARGET: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
+    /// Last mouse button press seen by `scroll_hook_proc` during the
+    /// current pick, to tell a click-away from other focus losses.
+    static LAST_BUTTON_DOWN: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
 }
 
 /// Persistent rendering resources for the overlay: the layered HWND
@@ -2037,6 +2102,7 @@ impl PersistentOverlay {
         // WM_SCROLL_DISMISS so the overlay cancels before the badges
         // desync from the scrolled content.
         SCROLL_HOOK_TARGET.with(|cell| cell.set(self.hwnd));
+        LAST_BUTTON_DOWN.with(|c| c.set(None));
         let scroll_hook: Option<HHOOK> =
             SetWindowsHookExW(WH_MOUSE_LL, Some(scroll_hook_proc), None, 0).ok();
 
@@ -2082,6 +2148,9 @@ impl PersistentOverlay {
             index,
             modifier: state.modifier,
         });
+        if result.is_none() {
+            crate::telemetry::note_cancel(state.cancel.as_str());
+        }
 
         // Hide first, then unbind the state pointer. The order matters
         // because ShowWindow can pump a few WM_KILLFOCUS / WM_NCACTIVATE
@@ -3801,5 +3870,42 @@ mod leader_tests {
         let head = arrowhead_polygon(start, end);
         assert_eq!(head[0].x, 30);
         assert_eq!(head[0].y, 40);
+    }
+}
+
+#[cfg(test)]
+mod cancel_reason_tests {
+    use super::*;
+
+    #[test]
+    fn focus_loss_soon_after_a_click_is_a_click() {
+        assert_eq!(focus_loss_reason(Some(0)), CancelReason::Click);
+        assert_eq!(
+            focus_loss_reason(Some(CLICK_TO_FOCUS_LOSS_MS)),
+            CancelReason::Click
+        );
+    }
+
+    #[test]
+    fn focus_loss_without_a_recent_click_is_focus_lost() {
+        assert_eq!(focus_loss_reason(None), CancelReason::FocusLost);
+        assert_eq!(
+            focus_loss_reason(Some(CLICK_TO_FOCUS_LOSS_MS + 1)),
+            CancelReason::FocusLost
+        );
+    }
+
+    #[test]
+    fn reasons_are_whitelist_friendly_strings() {
+        for r in [
+            CancelReason::Esc,
+            CancelReason::Click,
+            CancelReason::FocusLost,
+            CancelReason::Wheel,
+            CancelReason::Quit,
+        ] {
+            let s = r.as_str();
+            assert!(!s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
+        }
     }
 }

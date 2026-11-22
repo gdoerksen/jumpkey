@@ -40,7 +40,7 @@ mod pick;
 #[cfg(all(feature = "telemetry", windows))]
 pub use layer::{layer, shutdown, TelemetryGuard, TelemetryLayer};
 #[cfg(all(feature = "telemetry", windows))]
-pub use pick::{note_backspace, note_key, note_message, start, Pick, Started};
+pub use pick::{note_backspace, note_cancel, note_key, note_message, start, Pick, Started};
 
 /// `tracing` target of every telemetry span and event. The normal log
 /// filters it out; only the telemetry layer listens to it.
@@ -137,13 +137,19 @@ mod off {
     #[inline(always)]
     pub fn note_backspace() {}
 
+    /// The overlay closed without a pick, and why.
+    #[inline(always)]
+    pub fn note_cancel(_reason: &'static str) {}
+
     /// Flush open traces before exit.
     #[inline(always)]
     pub fn shutdown() {}
 }
 
 #[cfg(not(all(feature = "telemetry", windows)))]
-pub use off::{note_backspace, note_key, note_message, shutdown, start, Pick, Started};
+pub use off::{
+    note_backspace, note_cancel, note_key, note_message, shutdown, start, Pick, Started,
+};
 
 // ---------------------------------------------------------------------------
 // Macros
@@ -347,6 +353,9 @@ mod schema_tests {
         crate::tel_event!("shown");
         super::note_key();
         crate::tel_event!("key_complete");
+        if outcome == "cancelled" {
+            super::note_cancel("esc");
+        }
         p.count(3);
         p.outcome(outcome);
         if kind == "element" {

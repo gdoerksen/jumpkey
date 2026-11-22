@@ -48,6 +48,7 @@ const STRING_FIELDS: &[&str] = &[
     "kind",
     "scope",
     "outcome",
+    "cancel_by",
     "modifier",
     "cache",
     "action",
