@@ -1,20 +1,19 @@
-//! Public API for [jumpkey](https://github.com/gdoerksen/jumpkey).
+//! Internals of [jumpkey](https://github.com/gdoerksen/jumpkey).
 //!
 //! `jumpkey` is a system-wide keyboard navigation overlay. Press a leader
 //! chord, see hint labels on every interactable control on screen, type the
 //! hint, done.
 //!
-//! The crate ships both:
+//! This library exists so the binary, benchmarks, examples and tests share
+//! one codebase. It is **not a public API**: the crate isn't published and
+//! nothing here is stable (architecture review #18).
 //!
-//! - **A binary** (`jumpkey`) — an end-user tool that registers a global
-//!   hotkey, walks the foreground window's accessibility tree, and renders
-//!   the hint overlay.
-//! - **A library** — the platform-agnostic core types and traits
-//!   ([`Action`], [`Backend`], [`Element`], [`HintEngine`]), plus a Windows
-//!   backend in [`windows`] (only compiled on `target_os = "windows"`).
-//!
-//! A Linux backend (X11/Wayland) may land later as a module gated behind
-//! its own `cfg`.
+//! - The **core** (every module except [`windows`]) is platform-free: core
+//!   types and traits ([`Action`], [`Backend`], [`Element`], [`HintEngine`]),
+//!   config, keyboard model, layout. It must build and pass its tests on
+//!   Linux (`cargo script check-linux`, CI).
+//! - The **Windows backend** lives in [`windows`], behind `cfg(windows)`.
+//!   Another platform would get its own `cfg`-gated module next to it.
 
 #![warn(missing_docs)]
 

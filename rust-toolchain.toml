@@ -1,5 +1,7 @@
 [toolchain]
 channel = "stable"
 components = ["rustfmt", "clippy"]
-targets = ["x86_64-pc-windows-msvc"]
+# Linux is only for the portability guard (`cargo script check-linux`, CI):
+# the platform-free core must keep building there.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 profile = "default"

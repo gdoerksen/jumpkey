@@ -49,3 +49,31 @@ jobs:
         run: |
           cargo clippy -p pick-bench --all-targets
           cargo test -p pick-bench
+
+  # Portability guard (architecture review weakness 2, roadmap step 3):
+  # the platform-free core (everything outside `src/windows`) must build,
+  # pass clippy and pass its tests on Linux, so Windows types can't leak
+  # into it. Windows-only code goes behind `cfg(windows)`. pick-bench is
+  # a Windows-only driver and isn't a default member, so it's skipped.
+  linux:
+    name: check / linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy + test
+        run: |
+          cargo clippy --all-targets
+          cargo test
+
+      - name: telemetry feature clippy + test
+        run: |
+          cargo clippy --all-targets --features telemetry
+          cargo test --features telemetry

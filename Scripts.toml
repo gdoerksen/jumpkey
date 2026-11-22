@@ -12,6 +12,39 @@ doc = "cargo doc --no-deps --open"
 # jumpkey first. Pass options with `--env ARGS="--scenario dense-list"`.
 pick-bench = { interpreter = "powershell", command = "cargo build --release; if ($LASTEXITCODE -ne 0) { exit 1 }; cargo run --release -p pick-bench -- $($env:ARGS -split ' ')" }
 
+# Portability guard (architecture review weakness 2, roadmap step 3): the
+# platform-free core must build and pass clippy on Linux. Runs the Linux tests
+# too when WSL has Rust (CARGO_TARGET_DIR stays inside WSL, so Linux and
+# Windows build output never share a folder). CI runs the same checks.
+[scripts.check-linux]
+interpreter = "powershell"
+info = "Clippy for Linux, plus the Linux tests in WSL when available"
+command = """
+$ErrorActionPreference = 'Stop'
+$target = 'x86_64-unknown-linux-gnu'
+foreach ($features in @('', 'telemetry')) {
+    $extra = if ($features) { @('--features', $features) } else { @() }
+    Write-Host "== clippy for Linux $($extra -join ' ')"
+    cargo clippy --target $target --all-targets @extra -- -D warnings
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+$haveWslRust = $false
+if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
+    wsl.exe -e sh -c 'test -x $HOME/.cargo/bin/cargo || command -v cargo' *> $null
+    $haveWslRust = ($LASTEXITCODE -eq 0)
+}
+if (-not $haveWslRust) {
+    Write-Host 'Linux tests skipped (no Rust in WSL); CI runs them.'
+    exit 0
+}
+# No double quotes inside $inner: Windows PowerShell 5.1 strips them when
+# passing arguments to wsl.exe. Bash doesn't word-split assignments anyway.
+$inner = 'export PATH=$HOME/.cargo/bin:$PATH CARGO_TARGET_DIR=$HOME/jumpkey-target RUSTFLAGS=-Dwarnings && cargo test && cargo test --features telemetry'
+Write-Host "== tests on Linux (WSL)"
+wsl.exe --cd ((git rev-parse --show-toplevel).Trim()) -e bash -c $inner
+if ($LASTEXITCODE -ne 0) { exit 1 }
+"""
+
 # ---------------------------------------------------------------------------
 # Windows installer (MSI) — produces target/wix/Jumpkey-<version>-x86_64.msi
 #

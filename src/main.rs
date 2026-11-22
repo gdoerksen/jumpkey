@@ -23,10 +23,15 @@
 
 use std::process::ExitCode;
 
+// Everything below runs only in the Windows app; other targets build a
+// stub `main` (see `run_windows`), so these imports are Windows-only too.
 #[cfg(windows)]
 use jumpkey::config::ScopeMode;
+#[cfg(windows)]
 use jumpkey::telemetry::Pick;
+#[cfg(windows)]
 use jumpkey::{tel_event, tel_record, tel_span};
+#[cfg(windows)]
 use jumpkey::{Action, Backend, Config, Element, HintEngine, HintOrder};
 
 #[cfg(windows)]

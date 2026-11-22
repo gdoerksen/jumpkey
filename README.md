@@ -315,7 +315,10 @@ Issues and PRs welcome. Please run before pushing:
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test
+cargo script check-linux               # the core must still build on Linux
 ```
+
+`check-linux` runs clippy for Linux and, if WSL has Rust installed, the tests inside WSL (CI runs them either way). Only `src/windows` and the Windows parts of `main.rs` may use Windows APIs; anything else Windows-only goes behind `cfg(windows)`.
 
 ### Building the installer locally
 
