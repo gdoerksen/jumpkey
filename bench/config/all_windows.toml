@@ -6,13 +6,14 @@
 #
 # The chords are deliberately unusual so they don't collide with other
 # apps (PowerToys etc.): a collision makes jumpkey show a blocking
-# message box at startup. pick-bench checks all three are free before it
+# message box at startup. pick-bench checks all four are free before it
 # starts and presses `pick_element` (unless --hotkey overrides it).
 
 [hotkeys]
 pick_element = "Ctrl+Alt+Shift+F10"
 pick_window = "Ctrl+Alt+Shift+F11"
 open_settings = "Ctrl+Alt+Shift+F12"
+scroll_mode = "Ctrl+Alt+Shift+F9"
 
 [scope]
 mode = "all_windows"

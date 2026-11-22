@@ -480,6 +480,104 @@ impl ScrollMode {
 }
 
 // ---------------------------------------------------------------------------
+// Areas
+// ---------------------------------------------------------------------------
+
+/// Smallest area (each side, physical pixels) worth a Tab stop or badge.
+pub const MIN_AREA_SIDE: i32 = 48;
+
+/// Most areas a session offers (digits `1`–`9`).
+pub const MAX_AREAS: usize = 9;
+
+/// Where the session's first (instant) area came from (telemetry
+/// `first_from`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstFrom {
+    /// The nearest scrollable ancestor of the element under the cursor.
+    Point,
+    /// The nearest scrollable ancestor of the focused element.
+    Focus,
+    /// No scrollable element found: the window's client area.
+    Window,
+}
+
+impl FirstFrom {
+    /// Whitelist-friendly telemetry string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Point => "point",
+            Self::Focus => "focus",
+            Self::Window => "window",
+        }
+    }
+}
+
+/// The part of `b` inside `clip`, if any.
+fn clip_to(b: Bounds, clip: Bounds) -> Option<Bounds> {
+    let x0 = b.x.max(clip.x);
+    let y0 = b.y.max(clip.y);
+    let x1 = (b.x + b.width).min(clip.x + clip.width);
+    let y1 = (b.y + b.height).min(clip.y + clip.height);
+    (x1 > x0 && y1 > y0).then(|| Bounds {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    })
+}
+
+/// Turn discovered areas into the session's list and pick the active one.
+///
+/// - Each area is clipped to `window`; ones that end up smaller than
+///   [`MIN_AREA_SIDE`] or can't scroll are dropped, and duplicates (same
+///   rectangle) are merged.
+/// - Sorted in reading order (top to bottom, then left to right) and cut
+///   to [`MAX_AREAS`].
+/// - `first` (the instant area) is the active one. If discovery didn't
+///   find it (a plain-div scroller Chromium doesn't expose, or the window
+///   fallback), it is kept at the front so the user stays where they
+///   started.
+pub fn arrange_areas(found: Vec<Area>, window: Bounds, first: Option<Area>) -> (Vec<Area>, usize) {
+    let mut areas: Vec<Area> = Vec::new();
+    for a in found {
+        if !(a.can_h || a.can_v) {
+            continue;
+        }
+        let Some(bounds) = clip_to(a.bounds, window) else {
+            continue;
+        };
+        if bounds.width < MIN_AREA_SIDE || bounds.height < MIN_AREA_SIDE {
+            continue;
+        }
+        if let Some(dup) = areas.iter_mut().find(|x| x.bounds == bounds) {
+            dup.can_h |= a.can_h;
+            dup.can_v |= a.can_v;
+            continue;
+        }
+        areas.push(Area { bounds, ..a });
+    }
+    areas.sort_by_key(|a| (a.bounds.y, a.bounds.x));
+    areas.truncate(MAX_AREAS);
+
+    let Some(first) = first else {
+        return (areas, 0);
+    };
+    let first_bounds = clip_to(first.bounds, window).unwrap_or(first.bounds);
+    if let Some(i) = areas.iter().position(|a| a.bounds == first_bounds) {
+        return (areas, i);
+    }
+    areas.insert(
+        0,
+        Area {
+            bounds: first_bounds,
+            ..first
+        },
+    );
+    areas.truncate(MAX_AREAS);
+    (areas, 0)
+}
+
+// ---------------------------------------------------------------------------
 // Motion
 // ---------------------------------------------------------------------------
 
@@ -626,6 +724,23 @@ impl Motion {
         let leftover = d.pulse_total - d.pulse_done;
         d.pressed_at = now_ms;
         d.pulse_total = step + leftover.max(0.0);
+        d.pulse_done = 0.0;
+        d.pulse_start = now_ms;
+    }
+
+    /// Scroll `lines` in `dir`, animated like a tap (over `pulse_ms`),
+    /// without holding a key: half-page and top/bottom jumps when the
+    /// area has no ScrollPattern.
+    pub fn impulse(&mut self, dir: Dir, lines: f64, now_ms: f64) {
+        if !(lines.is_finite() && lines > 0.0) {
+            return;
+        }
+        if self.last.is_none() {
+            self.last = Some(now_ms);
+        }
+        let d = &mut self.dirs[dir.index()];
+        let leftover = (d.pulse_total - d.pulse_done).max(0.0);
+        d.pulse_total = lines + leftover;
         d.pulse_done = 0.0;
         d.pulse_start = now_ms;
     }
@@ -1191,6 +1306,90 @@ mod tests {
         assert_eq!(r.ev(KEY_X, false).0, Verdict::Pass);
     }
 
+    // ---- Areas ----
+
+    fn b(x: i32, y: i32, w: i32, h: i32) -> Bounds {
+        Bounds {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
+    }
+
+    fn v(bounds: Bounds) -> Area {
+        Area {
+            bounds,
+            can_h: false,
+            can_v: true,
+        }
+    }
+
+    const WIN: Bounds = Bounds {
+        x: 0,
+        y: 0,
+        width: 1000,
+        height: 800,
+    };
+
+    #[test]
+    fn arrange_sorts_filters_and_marks_the_first_active() {
+        let page = v(b(0, 0, 1000, 800));
+        let side = v(b(0, 100, 200, 600));
+        let tiny = v(b(300, 300, 40, 200));
+        let stuck = Area {
+            bounds: b(400, 400, 200, 200),
+            can_h: false,
+            can_v: false,
+        };
+        let (areas, active) = arrange_areas(vec![side, tiny, stuck, page], WIN, Some(side));
+        assert_eq!(areas, vec![page, side]);
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn arrange_clips_to_the_window_and_merges_duplicates() {
+        let overhang = v(b(-50, 700, 400, 300));
+        let dup = Area {
+            bounds: b(0, 700, 350, 100),
+            can_h: true,
+            can_v: false,
+        };
+        let (areas, _) = arrange_areas(vec![overhang, dup], WIN, None);
+        assert_eq!(
+            areas,
+            vec![Area {
+                bounds: b(0, 700, 350, 100),
+                can_h: true,
+                can_v: true
+            }]
+        );
+    }
+
+    #[test]
+    fn arrange_keeps_an_undiscovered_first_area_in_front() {
+        let page = v(b(0, 0, 1000, 800));
+        let plain_div = v(b(100, 100, 300, 300));
+        let (areas, active) = arrange_areas(vec![page], WIN, Some(plain_div));
+        assert_eq!(areas, vec![plain_div, page]);
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn arrange_caps_at_nine() {
+        let many: Vec<Area> = (0..15).map(|i| v(b(0, i * 50, 100, 50))).collect();
+        let (areas, active) = arrange_areas(many.clone(), WIN, Some(many[14]));
+        assert_eq!(areas.len(), MAX_AREAS);
+        assert_eq!(areas[active], many[14], "the first area always survives");
+    }
+
+    #[test]
+    fn first_from_strings() {
+        for f in [FirstFrom::Point, FirstFrom::Focus, FirstFrom::Window] {
+            assert!(f.as_str().chars().all(|c| c.is_ascii_lowercase()));
+        }
+    }
+
     // ---- Motion ----
 
     /// Run `m` at 120 Hz from `from` to `to` ms, summing the motion.
@@ -1312,6 +1511,16 @@ mod tests {
         assert!(b > a, "ramping back up, not coasting: {a} then {b}");
         let c = run(&mut m, 660.0, 1660.0).1;
         assert!((c - cfg.speed).abs() < 1.0, "back at full speed: {c}");
+    }
+
+    #[test]
+    fn impulse_moves_exactly_its_lines() {
+        let mut m = Motion::new(MotionConfig::default());
+        m.impulse(Dir::Down, 12.5, 0.0);
+        assert!(close(run(&mut m, 0.0, 300.0).1, 12.5));
+        assert!(m.is_idle());
+        m.impulse(Dir::Up, f64::NAN, 300.0);
+        assert!(m.is_idle(), "bad input ignored");
     }
 
     #[test]

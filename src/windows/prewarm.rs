@@ -291,6 +291,14 @@ unsafe extern "system" fn win_event_proc(
     let _ = try_send_hwnd(hwnd);
 }
 
+/// Drop `hwnd`'s cache entry because its content changed (scroll mode
+/// scrolled it, #21). No-op before [`Prewarmer::start`].
+pub fn invalidate(hwnd: HWND) {
+    if let Some(cache) = CACHE.get() {
+        cache.lock().invalidate(hwnd_to_key(hwnd));
+    }
+}
+
 /// Send `hwnd` to the worker, dropping silently when the queue is
 /// full (we always prefer the freshest HWND) or before
 /// [`Prewarmer::start`] has had a chance to install the sender.

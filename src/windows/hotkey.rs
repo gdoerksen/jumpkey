@@ -36,6 +36,8 @@ pub enum HotkeyAction {
     PickWindow,
     /// Open the settings dialog. Default: `Ctrl + Shift + ,`.
     OpenSettings,
+    /// Toggle scroll mode (#54). Default: `Ctrl + Alt + J`.
+    ScrollMode,
 }
 
 /// Registered hotkeys. Drop releases all OS registrations.
@@ -84,6 +86,7 @@ impl Hotkeys {
             (HotkeyAction::PickElement, &bindings.pick_element),
             (HotkeyAction::PickWindow, &bindings.pick_window),
             (HotkeyAction::OpenSettings, &bindings.open_settings),
+            (HotkeyAction::ScrollMode, &bindings.scroll_mode),
         ] {
             match parse_hotkey(raw) {
                 Ok((mods, code)) => {
@@ -180,6 +183,7 @@ impl fmt::Display for HotkeyAction {
             HotkeyAction::PickElement => write!(f, "Pick element"),
             HotkeyAction::PickWindow => write!(f, "Pick window"),
             HotkeyAction::OpenSettings => write!(f, "Open settings"),
+            HotkeyAction::ScrollMode => write!(f, "Scroll mode"),
         }
     }
 }

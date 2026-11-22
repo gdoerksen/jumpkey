@@ -35,7 +35,7 @@ a cold browser search is 45–245 ms on the fixtures; desktop apps take
 | 2 | **Done (2026-11-22).** Faster browser walk (#41) and the empty first press (#53). A spike compared pruning off-viewport subtrees with a one-call subtree cache; the cache won (no labels lost) and shipped: dense-list 721 → 165 ms, long-feed 1,296 → 243 ms. The prune variant stays on branch `spike/browser-walk` | The slowest part of the existing features | — | M |
 | 3 | **Done (2026-11-22).** The core already built on Linux (the `tracing-appender` failure was wasm-only) and all 123 core tests passed there; only 3 Windows-only imports in `main.rs` failed `-D warnings`. Now guarded by a `check / linux` CI job (clippy + tests, default and `telemetry`) and `cargo script check-linux` (clippy for Linux, tests in WSL when available). Pure helpers still inside `src/windows` (walk retry policy, `is_on_screen`, walk-dump JSON, overlay layout maths) aren't covered; they move to the core in step 6. Original item: **Portability guard** (weakness 2, round 7): `cargo check` and `cargo test --lib` for `x86_64-unknown-linux-gnu` in CI and in the local checks, and fix whatever doesn't build (e.g. `tracing-appender`, Windows-only deps not behind `cfg`) | Makes "portable core" a check rather than an intention, before steps 5–6 add a lot of core code | — | S |
 | 4 | **Done (2026-11-22).** The design holds: in 9 menu cases (Win32, Win11 XAML, Chromium, WinUI) a no-activate overlay plus `WH_KEYBOARD_LL` kept every menu open and no swallowed key leaked. Jumpkey's own chords must be matched **in the hook** while a mode is active (passing them to `RegisterHotKey` closes Win32 and Chromium menus). Chromium exposes ScrollPattern only on scroll containers that are in its accessibility tree. `KeyEvent` landed in the core (`src/input.rs`). Findings under #34; prototype on branch `spike/hook`. Original item: **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them (the one-call tree fetch from step 2 should make this cheap)? Record what the hook delivers as **platform-neutral key events** (physical key, modifiers, down/up), the seam a macOS event tap would fill | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
-| 5 | **Scroll mode v1** (#54) on the hook from step 4, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use | 4 | M |
+| 5 | **Done (2026-11-22).** Scroll mode v1 shipped in two PRs: groundwork (`input::Chord`, the pure `scroll.rs` core with `ScrollMode` + `Motion`, the dedicated hook thread) and the feature (area discovery, wheel engine, indicator, main-loop session, config, Settings, telemetry). Owner decisions are under #54. Original item: **Scroll mode v1** (#54) on the hook from step 4, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use | 4 | M |
 | 6 | **State machine + no-activate pick overlay** (Appendix A, #26), with the pick flow moved out of `main.rs` (#3) into the **platform-free core**: it consumes commands and key events and talks to `ElementSource` / overlay / input traits in neutral types, tested with fakes. The ID/cache thorough fix (`Snapshot`, weakness 6) lands here | Removes queued hotkeys (#15, #47) and the re-search after every pick (#48), gives menu mode a home, and is where the portability seams get designed from real callers (weakness 1) | 3, 5 | L |
 | 7 | Per-monitor overlays (#12, #32, #37), then menu mode (#33) | Mixed-DPI correctness, per-keystroke cost, the menu goal | 6 | L |
 | 8 | Shared UIA cache + event-driven freshness + serve-stale (#20–22), **re-scoped after the real-site check**: may shrink to "warm on foreground change" | After step 2 a miss costs 45–245 ms on the fixtures, so this mainly matters for very large real pages | 6 | M–L? |
@@ -2145,8 +2145,64 @@ containers are filtered out of every search (both the desktop search
 condition and the web filter require a clickable control type or
 pattern).
 
-**Status: designed, not implemented.** Roadmap step 5. The step 4 spike
-(#34) answered its risks. **Design changes from the spike:**
+**Status (2026-11-22): implemented** (roadmap step 5). Code:
+- `src/scroll.rs`: the pure core.
+  - `ScrollMode`: key decisions.
+  - `Motion`: tap and glide.
+  - `arrange_areas`.
+- `src/windows/scroll/`:
+  - `hook`: the dedicated thread.
+  - `areas`: UIA discovery.
+  - `engine`: tagged wheel input and jumps.
+  - `indicator`: outline and badges.
+  - `session`: main-loop glue.
+
+**Owner decisions (2026-11-22), on top of the table below:**
+- **Click:** ends the mode, and the click passes through.
+- **Idle timeout:** none.
+- **Indicator:** an outline plus digit badges, no text.
+- **Unused plain keys:** swallowed, including Shift+letter. Three in a
+  row end the mode.
+- **Ctrl, Alt and Win chords:** pass through, except jumpkey's own and
+  Ctrl+N/P.
+- **Tap and hold:** a tap scrolls one step. A hold glides after
+  `hold_ms` and ramps to `speed`. Units are lines through
+  `SPI_GETWHEELSCROLLLINES`. Defaults: step 3, speed 40, ×3 with Shift,
+  hold and ramp 150 ms.
+- **Tuning:** `[scroll]` hot-reload, no Settings slider.
+- **Physical wheel:** scrolls, and the mode stays on.
+- **Elevated windows:** the mode refuses to start, with a notice.
+- **Menus open when entering:** accepted for v1. The `RegisterHotKey`
+  entry chord can close Win32 and Chromium menus; the always-on hook
+  comes with step 6.
+- **Settings hotkey:** also matched in the hook (exit, then Settings).
+
+**Implementation notes:**
+- **Lone Alt:** the release is replaced by a tagged mask key plus the
+  Alt release, sent in one batch.
+- **The hotkey's own keys, still held at start:**
+  - Its key is seeded as held, so auto-repeat doesn't toggle the mode
+    off.
+  - Its modifiers are "stale" until released, so `k` with Ctrl+Alt
+    still down scrolls.
+- **Foreground, desktop switch and lock** are watched on the hook
+  thread.
+- **`SetCursorPos`** raises no low-level mouse event (probed), so
+  teleporting the pointer doesn't count as the user moving it.
+- **Found in the live test (17 checks, Vivaldi):**
+  - **Shift and Ctrl change what a wheel event means.** Shift+wheel
+    scrolls sideways and Ctrl+wheel zooms, and apps read both from the
+    keyboard state. So Shift (the "fast" key) and a still-held hotkey
+    Ctrl broke scrolling. Fix: the engine wraps each wheel event in
+    tagged key-ups and key-downs for the physically held Shift and Ctrl
+    sides, all in one batch. The hook keeps the real side state, so a
+    key released mid-batch gets re-released. Alt isn't lifted.
+  - **Chromium raises `EVENT_SYSTEM_FOREGROUND` for its page child
+    window** after a ScrollPattern jump. Only a different top-level
+    window ends the session.
+
+Original design follows. The step 4 spike (#34) answered its risks.
+**Design changes from the spike:**
 - The hook runs on a dedicated thread.
 - It matches jumpkey's chords itself.
 - A lone Alt tap must be handled.

@@ -6,4 +6,8 @@
 //! Area discovery, the scroll engine and the indicator come with the
 //! feature PR (roadmap step 5, part 2).
 
+pub mod areas;
+pub mod engine;
 pub mod hook;
+pub mod indicator;
+pub mod session;
