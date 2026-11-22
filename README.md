@@ -9,9 +9,7 @@
 **Status:** v0.6.0 (unreleased): the first Jumpkey release, forked from keyhop v0.5.0. Hint labels now follow your keyboard layout (Dvorak, Colemak, Workman, non-Latin layouts) and your finger geometry, so labels never repeat a key or use two keys typed by the same finger, and the strongest fingers get the shortest labels. Labels are handed out center-out from the window, and hints are drawn as callout badges with a tail pointing at the target. Windows only for now; a Linux backend is under consideration. **Renamed from keyhop:** config, logs, the startup entry and the installer now use `jumpkey` names, so nothing is migrated automatically. See the [changelog](CHANGELOG.md).
 
 [![ci](https://github.com/gdoerksen/jumpkey/actions/workflows/ci.yml/badge.svg)](https://github.com/gdoerksen/jumpkey/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/jumpkey.svg)](https://crates.io/crates/jumpkey)
-[![docs.rs](https://docs.rs/jumpkey/badge.svg)](https://docs.rs/jumpkey)
-[![license](https://img.shields.io/crates/l/jumpkey.svg)](#license)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 ## Goals
 
@@ -51,7 +49,7 @@ jumpkey/
    └─ enumerate_foreground.rs
 ```
 
-One package, one publish: `jumpkey` ships both the binary and a reusable library API. A Linux backend (X11/Wayland), if added, would land as an additional `cfg`-gated modules under `src/`.
+One package with a library and a binary target. The library is internal structure (so benchmarks, examples and tests can reach the code), not a public API, and the crate isn't published to crates.io. The core (hint engine, keyboard model, layout, config) is platform-free and the Windows code sits behind `cfg(windows)`, so a macOS or Linux backend can be added later.
 
 ## Install
 
@@ -82,8 +80,6 @@ If you don't want an installer, download `jumpkey.exe` from the same [release pa
 You'll need the MSVC toolchain (the regular Rust install on Windows pulls this in for you):
 
 ```powershell
-cargo install jumpkey                    # from crates.io
-# — or —
 git clone https://github.com/gdoerksen/jumpkey
 cd jumpkey
 cargo install --path .
@@ -221,28 +217,7 @@ shape        = ""         # empty = preset default (rect)
 launch_at_startup = false
 ```
 
-Missing keys, missing sections, and an entirely missing file all fall back to the v0.1.0 defaults. Malformed TOML is logged and ignored — jumpkey will start with defaults rather than refuse to run.
-
-## Library use
-
-Beyond the binary, `jumpkey` exposes a small library API. The Windows backend implements [`Backend`](https://docs.rs/jumpkey/latest/jumpkey/trait.Backend.html), and the [`HintEngine`](https://docs.rs/jumpkey/latest/jumpkey/struct.HintEngine.html) is platform-agnostic.
-
-```rust
-use jumpkey::{Backend, HintEngine};
-
-#[cfg(windows)]
-fn enumerate() -> anyhow::Result<()> {
-    let mut backend = jumpkey::windows::WindowsBackend::new()?;
-    let elements = backend.enumerate_foreground()?;
-    let hints = HintEngine::default().generate(elements.len());
-    for (el, hint) in elements.iter().zip(hints.iter()) {
-        println!("{hint}: {:?} {:?}", el.role, el.name);
-    }
-    Ok(())
-}
-```
-
-> The library surface is **experimental** while we're pre-1.0 — minor releases may break it. Pin a specific version if you embed it.
+Missing keys, missing sections, and an entirely missing file all fall back to the defaults. If the file has a syntax error, jumpkey shows a warning naming the line: when you edit it while jumpkey runs, it keeps your current settings; at startup it runs on defaults and leaves the file alone.
 
 ## Roadmap
 

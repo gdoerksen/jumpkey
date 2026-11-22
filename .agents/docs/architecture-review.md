@@ -6,6 +6,9 @@ the baseline): every item has a status line, line references are
 updated, measurements are folded in, and items #52–#54 (including scroll
 mode) are new. The current plan is the roadmap below; the older priority
 lists further down are kept for history._
+_Roadmap revised 2026-11-22 after steps 1–2: owner decisions on the
+library, publishing and portability (round 7), a portability guard step,
+and the freshness work moved last._
 
 Overall: the design is good. The pure logic is cleanly separated from the
 Windows code, and the speed work is careful and well documented. The weak
@@ -13,28 +16,30 @@ spots are a platform abstraction that doesn't really do its job yet, and too
 much pick logic living in `main.rs`. One likely correctness bug is in the
 element-ID / cache interaction (see weakness 6).
 
-## Current roadmap (2026-11-21)
+## Current roadmap (2026-11-22)
 
 _Replaces "What to do first", both "Revised priorities" lists and the
-"Correctness + speed roadmap" table below. Ordering is a proposal for
-the owner to confirm._
+"Correctness + speed roadmap" table below._
 
-Measured since the first review (baseline `baseline-a4d2f52`,
-`.agents/benchmarks/log.md`): browser pages take 0.7–1.3 s per press and
-almost all of it is the tree walk (#41); the cache never helps a press
-after a window switch (#20); desktop apps take 37–155 ms.
+Measured (`.agents/benchmarks/log.md`): before step 2, browser pages took
+0.7–1.3 s per press, almost all of it the tree walk (#41). After step 2
+a cold browser search is 45–245 ms on the fixtures; desktop apps take
+37–155 ms. The cache still never helps a press after a window switch
+(#20), but a miss is now cheap.
 
 | Step | Item | Why now | Depends on | Size |
 |---|---|---|---|---|
-| 1 | **Done (2026-11-21).** Small correctness fixes: reload safety (#8), warming-hook foreground filter (#10, became "invalidate on move"), the **quick fix** for the ID/cache bug (issue #22, weakness 6: tag cache entries with the ID generation that made them) | Silent config resets, wasted searches, wrong clicks | — | S each |
-| 2 | **Done (2026-11-22).** A spike measured pruning against a one-call subtree cache; the cache won (no labels lost; pruning lost a fixed popover) and shipped. Browser presses: dense-list 721 → 165 ms, long-feed 1,296 → 243 ms. The prune variant is kept on branch `spike/browser-walk` for a real-site check. Original item: **Faster browser walk** (#41): skip subtrees entirely outside the window, **together with the empty-first-press fix (#53)**, which lives in the same activation and walk code. Measured with pick-bench A/B against the baseline, and checked for the **same labels** per scenario, not just speed (sticky headers, fixed bars and children drawn outside their parent must survive) | The slowest part of today's features: 0.7–1.3 s per browser press against 37–155 ms for desktop apps | — | M |
-| 3 | **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them? | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
-| 4 | **Scroll mode v1** (#54) on the hook from step 3, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use before the big refactor relies on them | 3 | M |
-| 5 | State machine + no-activate pick overlay (Appendix A, #26), reusing the hook proven in step 4 | Removes queued hotkeys (#15, #47), the re-search after every pick (#48), and gives menu mode a home | 4 (hook), ideally the pick flow in the library (#3) | L |
-| 6 | Shared UIA cache + event-driven freshness + serve-stale (#20–22), **re-scoped after step 2**, using scroll mode's "this window scrolled" signal | Warm picks without stale labels. **After step 2:** a cold browser search is 45–245 ms on the fixtures (was 85–1,300), desktop 75–155 ms, so the remaining case for this is mainly very large real pages and the warming thread | 5 | L |
-| 7 | Per-monitor overlays (#12, #32, #37), then menu mode (#33) | Mixed-DPI correctness, per-keystroke cost, the menu goal | 5 | L |
+| 1 | **Done (2026-11-21).** Small correctness fixes: reload safety (#8), warming-hook "invalidate on move" (#10), the **quick fix** for the ID/cache bug (issue #22, weakness 6) | Silent config resets, wasted searches, wrong clicks | — | S each |
+| 2 | **Done (2026-11-22).** Faster browser walk (#41) and the empty first press (#53). A spike compared pruning off-viewport subtrees with a one-call subtree cache; the cache won (no labels lost) and shipped: dense-list 721 → 165 ms, long-feed 1,296 → 243 ms. The prune variant stays on branch `spike/browser-walk` | The slowest part of the existing features | — | M |
+| 3 | **Portability guard** (weakness 2, round 7): `cargo check` and `cargo test --lib` for `x86_64-unknown-linux-gnu` in CI and in the local checks, and fix whatever doesn't build (e.g. `tracing-appender`, Windows-only deps not behind `cfg`) | Makes "portable core" a check rather than an intention, before steps 5–6 add a lot of core code | — | S |
+| 4 | **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them (the one-call tree fetch from step 2 should make this cheap)? Record what the hook delivers as **platform-neutral key events** (physical key, modifiers, down/up), the seam a macOS event tap would fill | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
+| 5 | **Scroll mode v1** (#54) on the hook from step 4, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use | 4 | M |
+| 6 | **State machine + no-activate pick overlay** (Appendix A, #26), with the pick flow moved out of `main.rs` (#3) into the **platform-free core**: it consumes commands and key events and talks to `ElementSource` / overlay / input traits in neutral types, tested with fakes. The ID/cache thorough fix (`Snapshot`, weakness 6) lands here | Removes queued hotkeys (#15, #47) and the re-search after every pick (#48), gives menu mode a home, and is where the portability seams get designed from real callers (weakness 1) | 3, 5 | L |
+| 7 | Per-monitor overlays (#12, #32, #37), then menu mode (#33) | Mixed-DPI correctness, per-keystroke cost, the menu goal | 6 | L |
+| 8 | Shared UIA cache + event-driven freshness + serve-stale (#20–22), **re-scoped after the real-site check**: may shrink to "warm on foreground change" | After step 2 a miss costs 45–245 ms on the fixtures, so this mainly matters for very large real pages | 6 | M–L? |
+| — | **Step 2 follow-ups:** disabled Vivaldi buttons labelled after the one-call fetch (#41 status); the #53 retry budget is too short on a cold Vivaldi start; the **real-site check** of both walk variants (owner opens 2–3 daily sites) | Small, measured fixes; the real-site check decides prune vs cache for good and re-scopes step 8 | — | S each |
+| — | Typed config (#16) | The config file format is user-facing: cheapest to change before the first release | — | M |
 | — | Startup stall before the splash (#52) | Investigate when convenient; telemetry can time startup | — | S? |
-| — | Narrow the public library API (#18), typed config (#16) | Cheapest before the first release | — | M |
 
 **Why the walk comes right after the correctness fixes** (owner, round
 6): it is the slowest part of the existing features, and architecturally
@@ -47,6 +52,50 @@ slow cold searches, and it mostly removes the cap-before-sort problem
 `Snapshot` / `ElementSource` refactor (#3, weakness 6). For the same
 reason the ID/cache bug gets its quick fix in step 1, not the thorough
 `Snapshot` fix, which would rework the same backend code.
+
+### Owner decisions, round 7 (2026-11-22)
+
+| Topic | Decision |
+|---|---|
+| crates.io | **Not published.** jumpkey ships as MSI / GitHub releases / Store; `publish = false`. (Only upstream `keyhop` 0.5.0 is on crates.io, by its author.) |
+| Library API (#18) | **Internal.** The lib + bin split stays as code structure (benches, examples and tests reach the code; the pick flow can move out of `main.rs`), with **no stability promise and no outside consumers**. Visibility is whatever is convenient; nothing needs a version bump. |
+| Platforms | **Windows first, written to be portable** to Linux or macOS later. No second backend is built now. |
+| Freshness (old step 6) | Moved last (step 8), re-scoped after the real-site check. |
+
+**Portability: what it buys and what it costs.** The owner's view is
+that designing for a port forces better decisions. Mostly agreed, with
+one condition: the seams must be designed from the code that calls them,
+and proven by a **test fake** as the second implementation, not guessed
+from one Windows implementation.
+
+- **Buys:** a platform-free core (pick flow, state machine, hint engine,
+  layout, keyboard model, config, `Snapshot`) that is testable without a
+  desktop; Win32 types (`HWND`, UIA elements) can't leak into app logic;
+  the Linux check catches it when they try.
+- **Costs:** a trait shaped by one implementation is usually the wrong
+  shape (weakness 1 is exactly that: `Backend` was written up front and
+  nothing uses it). More indirection at the seams. Keeping the Linux
+  build green (Windows-only deps behind `cfg`). And the pull toward a
+  lowest common denominator.
+- **Rules that keep the cost down:**
+  1. Seams where the app actually varies: element source, overlay, key
+     input, hotkeys, actions. Designed in step 6 from real callers, each
+     with a fake for tests.
+  2. Traits speak neutral types (`Bounds`, physical keys, `Snapshot` /
+     `ElementId`), never `HWND` or UIA.
+  3. Platform-specific power is allowed as an optional capability (e.g.
+     UIA menu discovery for menu mode) rather than banned because another
+     platform lacks it.
+  4. No second backend until one is actually being built; the Linux
+     `cargo check` (step 3) is the enforcement in the meantime.
+- **Feasibility, for later:** macOS is the realistic second target (AX
+  API plus a `CGEventTap`, both behind the Accessibility permission; the
+  apps jumpkey is modelled on are macOS apps). Linux on X11 is fine;
+  **Wayland** restricts exactly what jumpkey needs (global hotkeys,
+  keyboard hooks, overlay placement, synthetic input), which needs
+  portals or compositor-specific protocols. The step 4 hook spike should
+  keep that in mind: the state machine must not depend on being able to
+  swallow keys globally.
 
 ## What's done well
 
@@ -81,7 +130,7 @@ reason the ID/cache bug gets its quick fix in step 1, not the thorough
 
 ### 1. The `Backend` trait isn't doing its job
 
-> **Status (2026-11-21):** open.
+> **Status (2026-11-22):** open; **keep and redesign** (round 7: write for portability). Replaced in roadmap step 6 by seams designed from the pick flow's real callers (`ElementSource` and friends), each with a test fake.
 
 The trait has two methods (`enumerate_foreground`, `perform`) and nothing
 uses it generically. `main.rs` calls `enumerate_by_scope`, `hint_anchor` and
@@ -92,7 +141,7 @@ trait to cover what the app actually needs, or drop it.
 
 ### 2. CI never checks that the core builds on other systems
 
-> **Status (2026-11-21):** open. CI still runs only on `windows-latest` (it now also runs clippy and tests with `--features telemetry`).
+> **Status (2026-11-22):** open; now **roadmap step 3** (portability guard). CI still runs only on `windows-latest`. Known blocker from step 1: `cargo check --lib` for a non-Windows target fails in `tracing-appender` (seen on wasm; the Linux target wasn't installed).
 
 The README and `Cargo.toml` stress that non-Windows targets compile without
 the `windows` module, but `.github/workflows/ci.yml` only runs on
@@ -581,7 +630,7 @@ that only applies after a restart (the warming thread's `max_elements` in
 
 ## 18. The library API is wider than intended
 
-> **Status (2026-11-21):** open. Still cheapest to fix before the first release.
+> **Status (2026-11-22):** **decided** (round 7): the library is internal, not published (`publish = false`), and has no stability promise; the README no longer advertises crates.io, docs.rs or a library API. Nothing to narrow. The portable-core rules in the roadmap replace "keep a small public API".
 
 The crate is published to crates.io as a library, and `pub mod windows`
 exposes everything: `settings_window::show`, `tray::Tray`,
