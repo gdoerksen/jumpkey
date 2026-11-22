@@ -35,6 +35,9 @@ thread_local! {
     static HOTKEY: Cell<Option<(i64, u32)>> = const { Cell::new(None) };
     /// `(characters, backspaces)` typed into the current overlay.
     static KEYS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
+    /// Why the current overlay closed without a pick (see
+    /// [`note_cancel`]).
+    static CANCEL: Cell<Option<&'static str>> = const { Cell::new(None) };
     /// `(end qpc, foreground hwnd)` of the previous pick.
     static LAST_PICK: Cell<Option<(i64, isize)>> = const { Cell::new(None) };
 }
@@ -58,6 +61,13 @@ pub fn note_key() {
         let (c, b) = k.get();
         k.set((c + 1, b));
     });
+}
+
+/// The overlay closed without a pick, and why: `esc`, `click`,
+/// `focus_lost`, `wheel` or `quit`. Recorded as `cancel_by` when the
+/// pick's outcome is `cancelled`.
+pub fn note_cancel(reason: &'static str) {
+    CANCEL.with(|c| c.set(Some(reason)));
 }
 
 /// Backspace pressed in the overlay.
@@ -95,6 +105,7 @@ impl Pick {
         let since_last = last.map(|(end, _)| qpc_us(end, hotkey_qpc) / 1000);
         let same_window = last.map(|(_, hwnd)| hwnd == foreground);
         KEYS.with(|k| k.set((0, 0)));
+        CANCEL.with(|c| c.set(None));
 
         let span = tracing::info_span!(
             target: TARGET,
@@ -103,6 +114,7 @@ impl Pick {
             scope = ?scope,
             count = Empty,
             outcome = Empty,
+            cancel_by = Empty,
             modifier = Empty,
             keystrokes = Empty,
             backspaces = Empty,
@@ -141,6 +153,10 @@ impl Pick {
     pub fn outcome(&self, outcome: &'static str) {
         self.outcome_set.set(true);
         self.record("outcome", outcome);
+        if outcome == "cancelled" {
+            let by = CANCEL.with(|c| c.take()).unwrap_or("unknown");
+            self.record("cancel_by", by);
+        }
     }
 
     /// Modifier held on the completing keystroke.
