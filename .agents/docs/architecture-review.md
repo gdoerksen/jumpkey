@@ -1,12 +1,52 @@
 # Architecture review
 
 _Date: 2026-11-20 · Commit reviewed: `410773f` (v0.6.0, unreleased)_
+_Refreshed 2026-11-21 against `596b321` (after pick-bench, telemetry and
+the baseline): every item has a status line, line references are
+updated, measurements are folded in, and items #52–#54 (including scroll
+mode) are new. The current plan is the roadmap below; the older priority
+lists further down are kept for history._
 
 Overall: the design is good. The pure logic is cleanly separated from the
 Windows code, and the speed work is careful and well documented. The weak
 spots are a platform abstraction that doesn't really do its job yet, and too
 much pick logic living in `main.rs`. One likely correctness bug is in the
 element-ID / cache interaction (see weakness 6).
+
+## Current roadmap (2026-11-21)
+
+_Replaces "What to do first", both "Revised priorities" lists and the
+"Correctness + speed roadmap" table below. Ordering is a proposal for
+the owner to confirm._
+
+Measured since the first review (baseline `baseline-a4d2f52`,
+`.agents/benchmarks/log.md`): browser pages take 0.7–1.3 s per press and
+almost all of it is the tree walk (#41); the cache never helps a press
+after a window switch (#20); desktop apps take 37–155 ms.
+
+| Step | Item | Why now | Depends on | Size |
+|---|---|---|---|---|
+| 1 | Small correctness fixes: reload safety (#8), warming-hook foreground filter (#10), the **quick fix** for the ID/cache bug (issue #22, weakness 6: tag IDs with the backend that made them) | Silent config resets, wasted searches, wrong clicks | — | S each |
+| 2 | **Faster browser walk** (#41): skip subtrees entirely outside the window, **together with the empty-first-press fix (#53)**, which lives in the same activation and walk code. Measured with pick-bench A/B against the baseline, and checked for the **same labels** per scenario, not just speed (sticky headers, fixed bars and children drawn outside their parent must survive) | The slowest part of today's features: 0.7–1.3 s per browser press against 37–155 ms for desktop apps | — | M |
+| 3 | **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them? | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
+| 4 | **Scroll mode v1** (#54) on the hook from step 3, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use before the big refactor relies on them | 3 | M |
+| 5 | State machine + no-activate pick overlay (Appendix A, #26), reusing the hook proven in step 4 | Removes queued hotkeys (#15, #47), the re-search after every pick (#48), and gives menu mode a home | 4 (hook), ideally the pick flow in the library (#3) | L |
+| 6 | Shared UIA cache + event-driven freshness + serve-stale (#20–22), **re-scoped after step 2**, using scroll mode's "this window scrolled" signal | Warm picks without stale labels; if step 2 makes cold browser searches cheap, parts of this may not be needed | 5 | L |
+| 7 | Per-monitor overlays (#12, #32, #37), then menu mode (#33) | Mixed-DPI correctness, per-keystroke cost, the menu goal | 5 | L |
+| — | Startup stall before the splash (#52) | Investigate when convenient; telemetry can time startup | — | S? |
+| — | Narrow the public library API (#18), typed config (#16) | Cheapest before the first release | — | M |
+
+**Why the walk comes right after the correctness fixes** (owner, round
+6): it is the slowest part of the existing features, and architecturally
+the most self-contained change on the list. It stays inside the browser
+walker (`walk_recurse` / `walk_window`) behind existing interfaces, needs
+none of the hook, state machine or cache work, and doesn't constrain
+their design. It may also shrink step 6, whose main reason to exist is
+slow cold searches, and it mostly removes the cap-before-sort problem
+(#41). Keep it a walker change: no backend restructuring before the
+`Snapshot` / `ElementSource` refactor (#3, weakness 6). For the same
+reason the ID/cache bug gets its quick fix in step 1, not the thorough
+`Snapshot` fix, which would rework the same backend code.
 
 ## What's done well
 
@@ -41,6 +81,8 @@ element-ID / cache interaction (see weakness 6).
 
 ### 1. The `Backend` trait isn't doing its job
 
+> **Status (2026-11-21):** open.
+
 The trait has two methods (`enumerate_foreground`, `perform`) and nothing
 uses it generically. `main.rs` calls `enumerate_by_scope`, `hint_anchor` and
 `PickContext` directly on the concrete `WindowsBackend`. Scope handling and
@@ -50,6 +92,8 @@ trait to cover what the app actually needs, or drop it.
 
 ### 2. CI never checks that the core builds on other systems
 
+> **Status (2026-11-21):** open. CI still runs only on `windows-latest` (it now also runs clippy and tests with `--features telemetry`).
+
 The README and `Cargo.toml` stress that non-Windows targets compile without
 the `windows` module, but `.github/workflows/ci.yml` only runs on
 `windows-latest`. A `cargo check` / `cargo test --lib` job on Linux would
@@ -57,12 +101,16 @@ keep that promise honest.
 
 ### 3. `main.rs` holds the app logic
 
-`handle_pick_element` (`src/main.rs:680`) runs the whole pick in the binary,
+> **Status (2026-11-21):** open. `handle_pick_element` is now `src/main.rs:738` and also carries the telemetry spans.
+
+`handle_pick_element` (`src/main.rs:738`) runs the whole pick in the binary,
 where it can't be tested. The main loop also has the "open settings → apply
 config → handle error" block written out twice (once for the hotkey, once for
 the tray). See the detailed section below.
 
 ### 4. Some files are too big
+
+> **Status (2026-11-21):** open. `overlay.rs` 3,805 lines, `windows/mod.rs` 2,306, `settings_window.rs` 2,110 (57 `unsafe`).
 
 - `overlay.rs` (~3.8k lines) mixes layout and collision handling, callout
   shape geometry, pixel drawing, and the Win32 window, message loop and
@@ -74,12 +122,16 @@ the tray). See the detailed section below.
 
 ### 5. Picking is synchronous and blocks the main loop
 
+> **Status (2026-11-21):** open. Scroll mode (#54) is designed not to add another nested loop.
+
 `pick_hint` runs its own message loop inside the main one. While the overlay
 is open, config reloads and tray commands wait. On a cold cache the UIA
 search also runs on the main thread. Fine for now; it only becomes a problem
 for features that need to react during a pick.
 
 ### 6. Element IDs are tied to backend state, and the cache check is unreliable
+
+> **Status (2026-11-21):** open, not yet reproduced (GitHub issue #22 on `gdoerksen/jumpkey`).
 
 `ElementId` is only meaningful inside the `WindowsBackend` instance that
 created it. That instance's map from ID to UIA element changes on every
@@ -89,6 +141,8 @@ uses can pass when it shouldn't (likely bug). See the detailed section below.
 
 ### 7. Smaller points
 
+> **Status (2026-11-21):** open. `Action::Scroll` is still never triggered; scroll mode (#54) scrolls with wheel input and ScrollPattern jumps and doesn't go through it.
+
 - `Action::Type` and `Action::Scroll` are never triggered by the binary.
 - Code is gated with `cfg(windows)` throughout `main.rs`. A Windows-only
   `app` module would be tidier.
@@ -96,6 +150,8 @@ uses can pass when it shouldn't (likely bug). See the detailed section below.
   setting has to be wired in there manually.
 
 ## What to do first
+
+_Superseded by the current roadmap at the top of this document._
 
 1. Fix or confirm the element-ID / cache issue (weakness 6).
 2. Add a Linux `cargo check` / `cargo test --lib` CI job.
@@ -200,10 +256,10 @@ Results:
 - Each search turns UIA elements into public `Element { id, bounds, ... }`
   values. `perform(id)` looks the ID up in **this backend's** map.
 - `enumerate_foreground` (active-window scope) **clears the map and resets
-  `next_id` to 0** on every real search (`src/windows/mod.rs:1081`).
+  `next_id` to 0** on every real search (`src/windows/mod.rs:1123`).
 - `enumerate_window` (multi-window scope **and the cache-warming thread**)
   never resets the counter, so its IDs keep counting up
-  (`src/windows/mod.rs:590`).
+  (`src/windows/mod.rs:627`).
 - The cache-warming thread owns a **separate** `WindowsBackend` with its own
   map and counter, and shares only the cache, which stores `Element`s
   (including their IDs), not UIA elements.
@@ -282,6 +338,8 @@ _Areas the first pass only skimmed. Ranked by impact._
 
 ## 8. Hot-reload can apply defaults over a working config (likely bug)
 
+> **Status (2026-11-21):** open. The reload path still calls `Config::load_or_default()` (`src/main.rs:413`); `save` still uses `std::fs::write`.
+
 - `config_watcher` posts a reload 150 ms after a file change.
 - The main loop calls `Config::load_or_default()`, which returns **defaults**
   when the file fails to parse (`src/config.rs:329`).
@@ -303,6 +361,8 @@ then rename).
 
 ## 9. UIA calls run on the UI thread with no timeout set
 
+> **Status (2026-11-21):** open. No connection or transaction timeout is set anywhere.
+
 On a cold cache, `handle_pick_element` searches the UIA tree on the main
 message-loop thread. `WM_GETOBJECT` uses `SendMessageTimeoutW` with a short
 timeout, but no UIA connection or transaction timeout is set on the client,
@@ -316,6 +376,8 @@ worker thread and show the overlay (or a "searching…" state) when results
 arrive.
 
 ## 10. The cache-warming hook reacts to every window, not just the foreground
+
+> **Status (2026-11-21):** open. `win_event_proc` (`src/windows/prewarm.rs:248`) still has no foreground check.
 
 `win_event_proc` (`src/windows/prewarm.rs`) forwards
 `EVENT_OBJECT_LOCATIONCHANGE` for **any** top-level window in any process.
@@ -338,6 +400,8 @@ debounce per window.
 
 ## 11. Multi-window searches bypass the cache and rebuild UIA clients on every press
 
+> **Status (2026-11-21):** open.
+
 In `active_monitor` / `all_windows` scope, only the foreground process's
 windows go through `enumerate_window` (cache-aware). Every other process
 group runs on a rayon thread that, **on every hotkey press**:
@@ -355,6 +419,8 @@ This also depends on fixing weakness 6, since cached IDs would then come
 from yet more sources.
 
 ## 12. The overlay redraws the whole virtual desktop on every keystroke
+
+> **Status (2026-11-21):** open, and visible in the measurements: the owner's three monitors make a buffer of at least 8330 × 2160 × 4 bytes ≈ 72 MB, which matches jumpkey's 75–85 MB private bytes in the baseline. Drawing a dense-list overlay takes ~19 ms (telemetry).
 
 `PersistentOverlay` keeps one 32-bit image the size of the **whole virtual
 desktop** for the life of the process. Every render
@@ -377,6 +443,8 @@ a 2×4K desktop.
 
 ## 13. Global state for Win32 callbacks
 
+> **Status (2026-11-21):** open.
+
 Win32 callbacks don't take a context argument, so per-module state lives in
 statics: `PERSISTENT_OVERLAY` / `SCROLL_HOOK_TARGET` (thread-local),
 settings `STATE` and `SETTINGS_WINDOW`, and the warming thread's
@@ -395,6 +463,8 @@ choice, but there are two sharp edges:
 
 ## 14. Smaller second-pass notes
 
+> **Status (2026-11-21):** open.
+
 - `apply_config` drops the old hotkeys before registering the new ones. If
   registration fails, the user has **no** hotkeys (they're told). Keeping
   the old set and rolling back on failure would be friendlier.
@@ -402,6 +472,8 @@ choice, but there are two sharp edges:
   updated by `apply_config`.
 
 ## Revised priorities
+
+_Superseded by the current roadmap at the top of this document._
 
 1. Confirm and fix the element-ID / cache bug (#22, weakness 6).
 2. Hot-reload safety (8): small change, prevents silent resets.
@@ -417,6 +489,8 @@ choice, but there are two sharp edges:
 # Third pass: UI model, config typing, public API
 
 ## 15. Three nested modal loops block the app
+
+> **Status (2026-11-21):** open. Since PR #24, hotkeys pressed during the splash are no longer stuck until the next message; they fire right after it (#49).
 
 The main thread runs the main loop, and three things start their own nested
 message loop on top of it:
@@ -448,6 +522,8 @@ nested loops. Short term, the cheap fixes are:
   `MB_SETFOREGROUND` / `MB_TOPMOST`) so it can't hide.
 
 ## 16. Config is mostly strings, parsed late and inconsistently
+
+> **Status (2026-11-21):** open.
 
 Hotkeys, colors and badge shape are stored as `String` and parsed wherever
 they're used:
@@ -482,6 +558,8 @@ or make it `custom_alphabet` and only read it when `preset = "custom"`.
 
 ## 17. Adding a setting means editing many places
 
+> **Status (2026-11-21):** open. Scroll mode's hotkey (#54) will be the next example: eight places in `settings_window.rs` alone.
+
 One new config field currently needs edits in:
 
 1. `config.rs` (struct, `Default`, serde attrs)
@@ -502,6 +580,8 @@ that only applies after a restart (the warming thread's `max_elements` in
   hotkeys and the UIA client are the only parts expensive enough to diff).
 
 ## 18. The library API is wider than intended
+
+> **Status (2026-11-21):** open. Still cheapest to fix before the first release.
 
 The crate is published to crates.io as a library, and `pub mod windows`
 exposes everything: `settings_window::show`, `tray::Tray`,
@@ -527,6 +607,8 @@ internals as API.
 
 ## 19. What's strong in the newer code (for balance)
 
+> **Status (2026-11-21):** still true.
+
 - **The keyboard model** (`keyboard.rs`) keeps physical keys, layout and
   finger geometry as separate concepts and maps between them explicitly.
   That's why layout-aware labels, Dvorak/Colemak support and the
@@ -542,6 +624,8 @@ These are examples of what the rest of the codebase could converge on:
 pure logic, typed inputs, failures reported at the edge.
 
 ## Revised priorities (after third pass)
+
+_Superseded by the current roadmap at the top of this document._
 
 1. #22 element-ID / cache bug.
 2. Config reload safety (8) together with typed config (16). Together these
@@ -564,6 +648,8 @@ second. This section re-reads the findings through that lens and adds the
 hot-path issues found while doing so._
 
 ## 20. The cache-warming thread almost never speeds up a real pick
+
+> **Status (2026-11-21):** **confirmed by measurement.** Pressing 300 ms or 2 s after a switch costs the same (dense-list 742 vs 748 ms p50): the warming search never finishes in time. Repeat presses alternate between a hit (~25 ms) and a full search, because a hit doesn't refresh the entry's 500 ms lifetime.
 
 `CacheManager::get` treats an entry as fresh for `cache_ttl_ms` from when it
 was **inserted** (default **500 ms**, `config.rs:309`). The warming thread
@@ -591,6 +677,8 @@ the intended design and how fast it feels in practice.
 
 ## 21. The short TTL is the only protection against stale labels
 
+> **Status (2026-11-21):** open. Scroll mode (#54) adds the first event-driven freshness signal: it knows when it scrolled a window.
+
 The 500 ms TTL is the only thing preventing stale labels. Nothing
 invalidates an entry when:
 - page content changes (SPA navigation, lazy loading, expanding panels)
@@ -604,6 +692,8 @@ labels in the wrong places. Fixing this needs a different freshness model,
 not a different number.
 
 ## 22. Nothing checks the chosen element before acting on it
+
+> **Status (2026-11-21):** open.
 
 `perform` acts on the stored `UIElement` without checking that it still
 exists or is where its label was drawn. With any caching, and even without
@@ -621,6 +711,8 @@ catches the #22 failure mode (the right ID pointing at an element in another
 window would fail the bounds check).
 
 ## 23. No measurements of hotkey → overlay latency
+
+> **Status (2026-11-21):** **done.** Outside: `tools/pick-bench` (PR #25, #27). Inside: the `telemetry` cargo feature (PR #26) records a span tree per pick, one JSON line per pick, plus a summary line in the log; see `docs/TELEMETRY.md`. Builds without the feature still have no timing log.
 
 The pick path has no timing logs. The README's goal is "sub-50 ms hint
 overlay", but nothing measures it, so it's impossible to tell whether a
@@ -640,6 +732,8 @@ That gives a real distribution from daily use and shows which of the
 items below is worth doing first.
 
 ## 24. The first pick of a session pays for setting up the overlay
+
+> **Status (2026-11-21):** **measured: small.** The first press after start costs ~20–50 ms more than a normal press on desktop apps (Explorer 175 vs 155 ms, VS Code ~105 vs 70, Terminal ~67 vs 37). On a freshly opened browser page the first press is dominated by Chromium building its tree (~1.1–1.2 s on small pages), not by the overlay. Still worth doing, low priority.
 
 `PersistentOverlay` is created lazily on the **first** hotkey press:
 registering the window class, creating the window, allocating and zeroing
@@ -690,6 +784,8 @@ possible.
 
 ## Correctness + speed roadmap
 
+_Superseded by the current roadmap at the top of this document._
+
 | # | Item | Why it matters for picks | Size |
 |---|---|---|---|
 | 1 | Pick timing logs (23) | Find out where the milliseconds go | S |
@@ -716,7 +812,9 @@ each comes with a way to check it on Windows._
 
 ## 25. Nested-element dedup is role-blind and keeps the innermost element
 
-`dedup_nested_records` (`src/windows/mod.rs:1629`) runs on **every** search,
+> **Status (2026-11-21):** open; confirmed in practice by the owner (round 1). `dedup_nested_records` is now `src/windows/mod.rs:1704`.
+
+`dedup_nested_records` (`src/windows/mod.rs:1704`) runs on **every** search,
 browser and desktop. For any clickable element that contains another:
 
 - Rule 1: if the outer element's area is more than 1.5× the inner one's,
@@ -753,6 +851,8 @@ on, and for Gmail rows.
 
 ## 26. The overlay takes keyboard focus, which may close transient UI
 
+> **Status (2026-11-21):** open. The owner chose the no-activate + keyboard-hook model for scroll mode (#54), which makes scroll mode the first production user of this design.
+
 `run_pick` shows the overlay with `SW_SHOWNOACTIVATE`, then immediately
 calls `SetForegroundWindow` + `SetFocus` on it so keystrokes reach it. When
 the target app loses activation:
@@ -788,6 +888,8 @@ early.
 
 ## 27. "Invoke" is the same for every role
 
+> **Status (2026-11-21):** open. Telemetry now records `invoke_path` per pick, so a week of daily data will show how often each path is used.
+
 `invoke_smart` tries the same order for every element (Invoke → Toggle →
 SelectionItem → ExpandCollapse → legacy default action → click), whatever
 its role:
@@ -812,11 +914,13 @@ took, so you can see when the fallback click is used.
 
 ## 28. DPI awareness is set after windows already exist (hypothesis)
 
+> **Status (2026-11-21):** open, unverified. The owner's 144-dpi 4K monitor makes it checkable.
+
 The process asks for Per-Monitor-V2 DPI awareness at runtime in
-`WindowsBackend::with_shared_cache` (`mod.rs:278`) and again in the overlay,
+`WindowsBackend::with_shared_cache` (`mod.rs:279`) and again in the overlay,
 and **ignores the result** (`let _ =`). But `run_windows` creates the
 **splash window** and the **IPC window** *before* the backend
-(`main.rs:194, 205, 222`). There's no application manifest declaring DPI
+(`main.rs:197, 208, 225`). There's no application manifest declaring DPI
 awareness.
 
 Windows documentation recommends setting DPI awareness in the manifest or
@@ -839,6 +943,8 @@ display (100 %), every label uses one monitor's size.
 
 ## 29. Elevated windows and system UI are probably out of reach
 
+> **Status (2026-11-21):** open. Also limits scroll mode: UIPI blocks synthesized wheel input to elevated windows.
+
 There's no manifest at all, so no `uiAccess`. Without it, a standard-user
 jumpkey process:
 - can read but generally can't **act on** windows running as admin (Task
@@ -858,6 +964,8 @@ signing.
 administrator" instead of failing silently?
 
 ## 30. Filtering rules are tuned by hand with no test corpus
+
+> **Status (2026-11-21):** open. pick-bench's fixture pages are a start for timing, not for label correctness.
 
 What gets labelled is decided by hand-tuned constants and rules:
 `MIN_HINT_PX = 12`, `MAX_HINT_PX = 1500`, web 10 / 16 px floors, the 1.5×
@@ -925,6 +1033,8 @@ These would shape the architecture more than any single fix:
 # Fifth pass: what menu support and mixed-DPI support require
 
 ## 31. Menu picking is blocked in three separate places
+
+> **Status (2026-11-21):** open (design).
 
 Taking focus (#26) is only one of three blockers. Even with a
 no-activate overlay, menus still wouldn't get labels.
@@ -1007,6 +1117,8 @@ redesign (§ "Proposed freshness design").
    menu-bar item opens it and immediately enters menu mode.
 
 ## 32. Mixed-DPI: what has to change
+
+> **Status (2026-11-21):** open (design). Owner decision: per-monitor DIPs, per-monitor overlays.
 
 The owner's setup (primary at 100 %, secondary 4K at likely 150–200 %) hits
 every single-scale assumption in the overlay.
@@ -1114,6 +1226,12 @@ decisions, approached from different sides:
    per-monitor overlay windows (#12, #32) ◀── Snapshot / ElementSource seam (#3)
 ```
 
+_Added 2026-11-21:_ **scroll mode (#54)** sits on the left column: it
+needs the no-activate window and keyboard hook (#26), forces UIA work off
+the main thread (#9), and its indicator is a small per-monitor window
+(#37). Building it before the state machine tests those pieces early;
+its "window scrolled" signal later feeds the freshness redesign.
+
 Suggested way to think about sequencing: **settle the focus model (#26)
 and the unit of searching (#31) first**, because they set the constraints
 for threading, caching and the overlay structure. The small correctness
@@ -1137,6 +1255,8 @@ before any of it, independently.
 # Sixth pass: designing menu mode, experiments, per-monitor overlays
 
 ## 33. Menu mode can know *before* acting whether a pick opens a submenu
+
+> **Status (2026-11-21):** open (design).
 
 UIA menu items that own a submenu expose `ExpandCollapsePattern`, and items
 without one report `ExpandCollapseState_LeafNode` (or have no such pattern).
@@ -1193,6 +1313,8 @@ should include an open menu from each.
 
 ## 34. The riskiest assumption: does a topmost no-activate overlay keep menus open?
 
+> **Status (2026-11-21):** open. Proposed as roadmap step 2, widened to also answer scroll mode's questions (#54).
+
 The whole menu plan relies on this: **showing a non-activating, topmost,
 layered window over an open menu does not close the menu.** Win32
 menus run a modal loop in the target app's thread and close on
@@ -1216,6 +1338,8 @@ afterwards (re-asserting `HWND_TOPMOST`), but it explains a class of
 "labels hidden behind a popup" bugs to watch for.
 
 ## 35. Experiments need a home in the config and the architecture
+
+> **Status (2026-11-21):** open. The local measurements suggested here now exist (cancel rate, keystrokes, backspaces, outcome per pick, in telemetry).
 
 "Label only the menu, see if it's good or annoying" is the first of
 what will probably be many UX experiments (stable labels, label placement,
@@ -1251,12 +1375,14 @@ even though nothing leaves the machine.
 
 ## 36. The logs already contain content the privacy policy says they don't
 
+> **Status (2026-11-21):** open. The window title is still logged at `info` (`src/main.rs:853`) and at `warn` on search failures (`src/windows/mod.rs:476, 559`). The telemetry records follow the rule by construction (string-field whitelist, `docs/TELEMETRY.md`).
+
 Found while checking the above: `PRIVACY_POLICY.md` says the log has "no
 personal or sensitive information", but:
-- `main.rs:755` logs the **chosen window title** at `info` level on every
+- `main.rs:853` logs the **chosen window title** at `info` level on every
   window pick (titles routinely include email subjects, document names,
   URLs, chat names).
-- `mod.rs:450, 522` log window titles at `warn` level when a search
+- `mod.rs:476, 559` log window titles at `warn` level when a search
   fails.
 - `debug`/`trace` levels log titles and element names more widely (only
   when the user turns on debug logging).
@@ -1269,6 +1395,8 @@ contain titles, names or URLs**, only ids, roles, counts and timings.
 Content-bearing fields only at `debug`, off by default.
 
 ## 37. Per-monitor overlays: design notes
+
+> **Status (2026-11-21):** open (design). Scroll mode's indicator window (#54) is a small first per-monitor, no-activate layered window.
 
 Approved as the direction. Things to decide when designing it:
 
@@ -1316,6 +1444,8 @@ completely untouched?
 
 ## 38. Background: the UI frameworks jumpkey has to read
 
+> **Status (2026-11-21):** background.
+
 Each framework builds its accessibility tree differently, so "what gets
 labelled" (#25, #30) and "how menus work" (#33) differ per framework.
 
@@ -1336,7 +1466,9 @@ one, which makes Explorer a good single test case for #34.
 
 ## 39. Browser detection by exe name doesn't match how apps are built
 
-`is_browser_window` (`mod.rs:1918`) decides "browser rules or desktop
+> **Status (2026-11-21):** open. `is_browser_window` is now `src/windows/mod.rs:1993`. VS Code (desktop path) measured 70 ms p50; label coverage there is still unchecked.
+
+`is_browser_window` (`mod.rs:1993`) decides "browser rules or desktop
 rules" for a **whole window** by matching the **exe name** against a fixed
 list (chrome, msedge, firefox, brave, opera, vivaldi, iexplore, arc).
 
@@ -1382,6 +1514,8 @@ apps you use daily where labels have felt sparse? That would confirm or
 rule out the first bullet quickly.
 
 ## 40. Telemetry: designing it so it's easy to remove
+
+> **Status (2026-11-21):** **done, with a different shape** (PR #26): a `telemetry` cargo feature, off by default, implemented as `tracing` spans plus a custom layer instead of a typed `Event` enum. Content is kept out by a whitelist of string fields. Records go to local JSON lines under `%LOCALAPPDATA%\jumpkey\telemetry\`; nothing is sent anywhere.
 
 The plan (temporary telemetry, removed or opt-in before release) is
 reasonable. The architecture can make "remove" a build setting rather
@@ -1472,6 +1606,8 @@ and **WinUI/XAML**. Together they're an ideal first fixture corpus (#30).
 
 ## 41. Vivaldi: the browser's own UI is web content
 
+> **Status (2026-11-21):** **confirmed by measurement.** Browser pages take 0.7–1.3 s per press and scale with page size, not label count (form 89 ms → dense-list 748 → long-feed 1,272 p50). Telemetry: the walk's tree search is ~98 % of a dense-list press (~930 ms, 2,111 nodes visited for 134 elements). The cap-before-sort point is still open. The "sparse first press" guess turned out worse: see #53.
+
 Vivaldi builds its tab bar, panels, address bar and status bar out of web
 technology inside Chromium. So the *browser chrome* is a DOM too, and
 everything goes through the browser path (`vivaldi.exe` is in the list,
@@ -1510,6 +1646,8 @@ Things that follow, all to check on the owner's machine:
 
 ## 42. VS Code: Electron gets desktop rules, and menus can be in-window
 
+> **Status (2026-11-21):** open. 70 ms p50 in the baseline.
+
 - **Not in the browser list**, so it gets the desktop path: one
   server-side `FindAll(Subtree)` with the interactable-type condition, no
   activation probe, desktop filters. The `FindAll` has no depth limit, so
@@ -1532,6 +1670,8 @@ Things that follow, all to check on the owner's machine:
 
 ## 43. Windows Terminal: XAML tabs plus a large text surface
 
+> **Status (2026-11-21):** open. 37 ms p50 in the baseline, the only app meeting the 50 ms goal.
+
 - Tabs, the new-tab dropdown and the Settings UI are WinUI/XAML: desktop
   path. Tabs contain close buttons, so **#25 again**. The dropdown is
   a XAML flyout (popup window), so it's a #34 test case too.
@@ -1549,6 +1689,8 @@ Things that follow, all to check on the owner's machine:
   text ranges, not controls).
 
 ## 44. All pixel thresholds are physical pixels, so filtering differs per monitor
+
+> **Status (2026-11-21):** open.
 
 Found via #43, but more general: every size rule in the filters uses
 **physical** pixels: `MIN_HINT_PX = 12`, `MAX_HINT_PX = 1500`,
@@ -1588,7 +1730,9 @@ the filter layer.
 
 ## 45. Labels are placed in reading order, not by importance
 
-`lay_out` (`overlay.rs:1328`) places badges **top-to-bottom, left-to-right**,
+> **Status (2026-11-21):** open. Owner decision (round 5): distant badge with a leader line when there's no room.
+
+`lay_out` (`overlay.rs:1330`) places badges **top-to-bottom, left-to-right**,
 and each badge takes the first free spot from its candidate list (callout
 below or above, then `OutsideTop`, `TopLeft`, `TopRight`, `BottomRight`,
 `OutsideBottom`, then stacking downward).
@@ -1618,7 +1762,9 @@ Fallback behaviour adds to it:
 
 ## 46. Synthesized clicks: center point, and the cursor isn't restored
 
-`click_at` (`mod.rs:1219`, used for right-click and double-click, and
+> **Status (2026-11-21):** open. `click_at` is now `src/windows/mod.rs:1261`. Scroll mode (#54) needs the same teleport-and-restore helper.
+
+`click_at` (`mod.rs:1261`, used for right-click and double-click, and
 `el.click()` as the last fallback for invoke) moves the cursor to the
 element's **center** with `SetCursorPos` and leaves it there.
 
@@ -1642,6 +1788,8 @@ click (except right-click, where the context menu appears at the cursor,
 and arguably the cursor belongs with it)?
 
 ## 47. Pressing the hotkey while the overlay is open queues another pick
+
+> **Status (2026-11-21):** open.
 
 Very likely one of the "fire all at once" behaviours the owner has seen
 (#15):
@@ -1671,6 +1819,8 @@ state-machine point from #33 again.
 
 ## 48. Every pick triggers a background re-search of the same window
 
+> **Status (2026-11-21):** open.
+
 When the overlay hides, Windows activates the target app again, which
 fires `EVENT_SYSTEM_FOREGROUND`. The warming hook skips **jumpkey's own**
 windows (`WINEVENT_SKIPOWNPROCESS`), but this event is for the **target
@@ -1694,6 +1844,8 @@ Another reason to settle #26 first.
 
 ## 49. A 2.5-second splash on every start, with hotkeys queued behind it
 
+> **Status (2026-11-21):** **changed.** Since PR #24 the splash loop dispatches hotkeys and the main loop drains them right after the splash, so presses are no longer lost; they still fire after the splash ends. Separately, startup sometimes stalls 3–5 s before the splash appears (#52).
+
 `run_windows` keeps the splash visible for at least 2.5 s (`MIN_SPLASH_MS`)
 **on every start**, including **launch at login**. During that time,
 hotkeys are already registered but the main loop hasn't started polling,
@@ -1704,6 +1856,8 @@ opposed to only when started by hand? Should it be skippable (any key or
 click), or replaced by a short tray balloon ("jumpkey is running")?
 
 ## 50. Keyboard input edge cases
+
+> **Status (2026-11-21):** open. A keyboard hook (#26, #54) changes most of these.
 
 - The overlay handles only `WM_KEYDOWN`. `WM_SYSKEYDOWN` (Alt held) is
   ignored, which is fine.
@@ -1749,11 +1903,13 @@ against doing smaller fixes first.
 
 ## 51. Where the "flying mouse" comes from: the `uiautomation` crate's `click()`
 
+> **Status (2026-11-21):** open. The fallback is now `src/windows/mod.rs:1370`; telemetry's `invoke_path` will show how often it fires.
+
 jumpkey's own `click_at` (right-click, double-click) **teleports** with
 `SetCursorPos`. The flying cursor comes from the other click path:
 `UIElement::click()` from the `uiautomation` crate, which jumpkey calls
 - as the **last fallback in `invoke_smart`** (`InvokePath::MouseFallback`,
-  `mod.rs:1347`), whenever no UIA pattern worked, and
+  `mod.rs:1370`), whenever no UIA pattern worked, and
 - for `Action::Click`.
 
 In `uiautomation` 0.24.4 (read from docs.rs), `UIElement::click()` uses
@@ -1787,6 +1943,184 @@ how often the fallback (and its glide) currently happens.
 **Question:** when the fallback click fires today, do you also notice a
 **pause** before the click lands, not just the glide? That would confirm
 the extra fixed waits.
+
+---
+
+# Tenth pass: after the measurements (2026-11-21)
+
+## 52. Startup sometimes stalls 3–5 s before the splash appears
+
+Seen by pick-bench: in 4 of 5 runs at least one jumpkey start took
+3–5 s before its splash window appeared, always while a browser had just
+been launched. A normal start (spawn → splash closed) takes ~2.9 s, most
+of it the splash's 2.5 s minimum. Something that runs **before**
+`SplashScreen::show()` (`src/main.rs:197`) waits on other processes.
+Candidates to check: the single-instance guard, COM/UIA initialisation,
+or anything that touches other windows (a broadcast `SendMessage` blocks
+on busy windows).
+
+**Not investigated.** A `startup` span in the telemetry build, or plain
+timestamps around each startup phase, would find it quickly. It matters
+most for launch at login, when every other app is starting too.
+
+## 53. The first press on a freshly opened Chromium page can show nothing
+
+Worse than #41's guess of a "sparse first press": on a just-opened Vivaldi
+page jumpkey sometimes finds **no** elements, logs "no interactable
+elements" and shows no overlay at all, so the user sees nothing happen.
+Reproduced in three pick-bench runs; a press a few seconds later works.
+pick-bench now retries the first press and records `first_press_attempts`
+so it stays visible in the data.
+
+Likely cause: Chromium builds its accessibility tree only after being
+asked, the activation probe waits 50 ms, and the walk runs immediately
+on whatever exists. **Fix direction:** when a browser walk finds nothing
+(or very little) right after activation, wait briefly and walk once more
+before giving up; and never cache an empty result. Small, user-visible,
+and testable with pick-bench's first-press data.
+
+## 54. Scroll mode (Homerow-style): design and where it fits
+
+The owner wants keyboard scrolling like Homerow's: a hotkey enters
+scroll mode, `h j k l` scroll the active scroll area, Shift scrolls
+faster, Tab or a digit switches to another area, Esc exits. (Vimac,
+Homerow's predecessor, outlines the active area.) Today jumpkey can't do
+this: `Action::Scroll` exists (`src/action.rs:34`, ScrollPattern at
+`src/windows/mod.rs:1394`) but nothing triggers it, and scroll
+containers are filtered out of every search (both the desktop search
+condition and the web filter require a clickable control type or
+pattern).
+
+**Status: designed, not implemented.** The owner wants to settle where it
+goes in the roadmap first.
+
+### Owner decisions
+
+| Topic | Decision |
+|---|---|
+| Input | **No-activate indicator + low-level keyboard hook**: the target app keeps focus |
+| Areas | **Several areas**, as in Homerow; start on the area under the cursor, else the largest |
+| Feel | **Smooth while a key is held** (velocity, stops on key-up) |
+| Hotkey | **`Ctrl+Alt+J`** by default (same family as the window picker's `Ctrl+Alt+Space`) |
+| Pointer | Moved into the active area while scrolling (wheel input goes to what's under the pointer), **restored on exit** |
+
+### Keys
+
+Bound to **physical key positions** (`src/keyboard.rs`), so they stay on
+the home row in Dvorak and Colemak, like Homerow.
+
+| Key | Effect |
+|---|---|
+| `h` `j` `k` `l` (held) | smooth scroll left / down / up / right; keys held together combine |
+| Shift + `hjkl` | fast (× `fast_multiplier`) |
+| `d` / `u` | half the area's height down / up (animated) |
+| `g g` / Shift+`G` | top / bottom (ScrollPattern `SetScrollPercent`; a long wheel burst as fallback) |
+| Tab, ↓, Ctrl+N / Shift+Tab, ↑, Ctrl+P | next / previous area |
+| `1`–`9` | jump to area *n* |
+| Esc, or the hotkey again | exit |
+| any other key, or a pick hotkey | exit; the key passes through (a pick then runs) |
+
+### Design
+
+- **Pure core, `src/scroll.rs` (cross-platform, unit-tested).**
+  `ScrollMode` holds the areas, the active index, the held keys and a
+  pending `g`; `on_key(KeyEvent) -> Vec<Effect>` and `on_areas(..)`.
+  Effects: `SetVelocity { dx, dy }`, `Jump(Top | Bottom | HalfPageUp |
+  HalfPageDown)`, `SelectArea(i)`, `Exit`, `PassThrough`. This is the
+  Appendix A pattern (pure transition, effects run by a Win32 shell) on a
+  small scale.
+- **Keyboard hook** (`src/windows/scroll/hook.rs`): `WH_KEYBOARD_LL`,
+  installed on the main thread only while the mode is active. It ignores
+  injected events, maps the scancode to a physical key, swallows bound
+  keys (and their key-ups) and posts a thread message to the main loop.
+  Keys with Ctrl or Alt held pass through (except Ctrl+N/P), so
+  registered hotkeys still arrive.
+- **Area discovery** (`areas.rs`):
+  - *Instant first area:* `ElementFromPoint(cursor)` if the cursor is in
+    the foreground window, else the focused element; walk up to the
+    nearest ancestor with ScrollPattern that can scroll on some axis;
+    else the window's client rect.
+  - *All areas, on a worker:* `FindAll(Descendants,
+    IsScrollPatternAvailable)` with bounds and the scrollable flags
+    cached, filtered to visible, non-tiny areas inside the window. Posted
+    back to the main loop; Tab and digits work once they arrive.
+- **Scroll engine** (`engine.rs`): a worker thread with its own UIA
+  client that does every `SendInput`. About 120 ticks a second while the
+  velocity is non-zero, `MOUSEEVENTF_WHEEL` / `HWHEEL` with the fractional
+  delta carried between ticks; jumps through ScrollPattern. Selecting an
+  area teleports the pointer to its centre (`SetCursorPos`, never
+  animated, #51); on exit the pointer goes back unless the user moved
+  the mouse meanwhile.
+- **Indicator** (`indicator.rs`): a layered, topmost window that takes no
+  clicks or focus (`WS_EX_LAYERED | TRANSPARENT | NOACTIVATE | TOPMOST |
+  TOOLWINDOW`) over the foreground window. It outlines the active area
+  and puts small digit badges on the others, sized for that monitor's
+  DPI.
+- **Exits:** Esc, the hotkey, an unbound key, a foreground change
+  (WinEvent hook for the session), either pick hotkey.
+- **Main loop:** a `scroll: Option<ScrollSession>` handled in the
+  existing loop, **not a nested loop**, so the hotkey toggles the mode
+  instead of queueing (#47).
+- **Config:** `hotkeys.scroll_mode = "Ctrl+Alt+J"`; `[scroll]` with
+  `speed` (wheel units per second, tuned live) and `fast_multiplier = 3`.
+  The hotkey gets a Settings field (eight places today, #17); speed is
+  config-file only.
+- **Telemetry:** a `scroll` root span (areas found, discovery time, where
+  the first area came from, keys, duration, outcome).
+- **Bench contract:** the bench config templates need an explicit
+  `scroll_mode` chord (`Ctrl+Alt+Shift+F9`), since an empty string is
+  reported as a hotkey conflict; pick-bench's chord pre-check includes it.
+
+**Out of scope for v1:** scrolling from inside the element picker, custom
+bindings, elevated windows (UIPI blocks the wheel input, #29).
+
+### Risks
+
+- **Does Chromium expose ScrollPattern on web scroll containers?** If
+  not, v1 treats a Chromium window as one area (the wheel still works,
+  only area switching is lost). The spike answers this first.
+- **Old Win32 apps ignore wheel deltas under 120.** Either gather the
+  delta into whole notches for those frameworks (by `FrameworkId`, #39)
+  or accept stepped scrolling there.
+- **Hook timeouts.** Windows silently removes a low-level hook whose
+  thread doesn't answer in time, so the main thread must do no UIA work
+  while the mode is active. All UIA calls go to workers.
+- **Stuck keys.** Track key-ups; clear the velocity on every exit.
+
+### How scroll mode fits the architecture
+
+Scroll mode shares infrastructure with almost every large item in this
+document, which is why its place in the order matters:
+
+| Shared piece | Also needed by | What scroll mode does for it |
+|---|---|---|
+| No-activate window + `WH_KEYBOARD_LL` (#26, #34) | menu picking, IME (#50), per-monitor input (#37) | Proves it in daily use on a low-risk feature: a hook bug means "scrolling didn't work", not "a menu closed" |
+| A mode as a state in the main loop, not a nested loop (Appendix A, #15, #47) | the state machine | `ScrollMode`'s `on_key → effects` is the pattern the state machine generalises |
+| UIA off the main thread (#9) | cold searches | Required here (the hook dies otherwise), so the worker-and-post-back pattern gets built early |
+| Click-through indicator per monitor DPI (#32, #37) | per-monitor overlays | A small first per-monitor, no-activate layered window |
+| Pointer teleport + restore (#46, #51) | the single jumpkey-owned click routine | Same rule, one shared helper |
+| Cache freshness (#21) | serve-stale cache | Scroll mode **knows** it scrolled a window: on exit it can drop that window's cache entry and warm a new search, so "scroll, then pick" gets a warm pick. The first event-driven freshness signal |
+
+**Place in the roadmap:** after the correctness fixes and the faster
+browser walk, right after the hook spike and before the state machine
+(current roadmap, steps 3–4). Building it after the state machine as just
+another state would be cleaner, but would delay both the feature and
+real-world testing of the hook the state machine depends on.
+
+---
+
+# Owner decisions, round 6 (2026-11-21)
+
+| Topic | Decision |
+|---|---|
+| Architecture review | Refresh it in place (this pass) and keep one current roadmap |
+| Scroll mode | Wanted, Homerow-style (#54). **Design first; build after reviewing where it fits in the roadmap** |
+| Scroll mode input | No-activate indicator + low-level keyboard hook |
+| Scroll areas | Several, with Tab and digits to switch |
+| Scroll feel | Smooth while held |
+| Scroll hotkey | `Ctrl+Alt+J` |
+| Pointer during scroll mode | Moved into the active area, restored on exit |
+| Roadmap order | **Correctness fixes, then the faster browser walk** (the slowest existing feature), then the hook spike, scroll mode, and the state machine |
 
 ---
 
@@ -1839,6 +2173,7 @@ so it can be unit-tested on any OS (#3, #2).
 | `Acting { element, action }` | Performing the chosen action (pre-action check first, #22 guard). | chosen element + intended action |
 | `AwaitingPopup { parent, deadline }` | Menu mode: a submenu is expected to appear. | parent menu item, deadline (max wait: **open**) |
 | `Settings` | Settings dialog open (no longer a nested loop). | dialog state |
+| `Scrolling { areas, active }` | Scroll mode (#54): keyboard hook installed, indicator shown, scroll engine running. | areas, active index, held keys, saved pointer position |
 
 Window picker: either a separate `Picking` flavour (`kind: Element |
 Window`) or its own states. **(open)**, leaning to one `Picking` with a
@@ -1859,6 +2194,9 @@ Window`) or its own states. **(open)**, leaning to one `Picking` with a
 | `Timeout(id)` | timers (popup wait, search cap) |
 | `ConfigChanged(Config)` | config watcher / Settings save (#8) |
 | `Tray(Command)` | tray menu |
+| `Hotkey(ScrollMode)` | `RegisterHotKey` (#54) |
+| `ScrollKey(key, down/up)` | keyboard hook while `Scrolling` |
+| `AreasFound(Vec<Area>)` | scroll-area worker |
 
 ## Transitions (decided by the owner where noted)
 
@@ -1884,6 +2222,11 @@ Window`) or its own states. **(open)**, leaning to one `Picking` with a
 | `AwaitingPopup` | `Timeout` | **(open)**: show whatever exists, or `Idle` | owner: max wait undecided |
 | any | `ConfigChanged` | apply when back in `Idle` (or immediately if safe) **(open)** | #8 |
 | any non-Idle | `Hotkey(OpenSettings)` | **(open)**: ignore, or exit pick then open | — |
+| `Idle` | `Hotkey(ScrollMode)` | `Scrolling`; first area from the cursor/focus, full discovery on a worker | #54 |
+| `Scrolling` | `ScrollKey` | stay; update velocity, jump or switch area | #54 |
+| `Scrolling` | `AreasFound` | stay; update the indicator, keep the active area | #54 |
+| `Scrolling` | `Esc`, `Hotkey(ScrollMode)`, unbound key, `ForegroundChanged` | `Idle`; restore the pointer, invalidate the window's cache entry | #54, #21 |
+| `Scrolling` | `Hotkey(PickElement)` / `Hotkey(PickWindow)` | `Searching` (exit scroll mode, then pick) | #54 |
 
 Menu-bar items behave like submenu items: picking one opens it and enters
 menu mode (owner, round 2, #5).
