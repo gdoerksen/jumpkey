@@ -14,6 +14,48 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 
 ---
 
+## 2026-11-22: faster browser walk (roadmap step 2 PR 3) and the spike
+
+**Spike** (`spike-<mode>-<scenario>`, branch `spike/browser-walk` at
+`ec753d8`): one build, mode from the exe name, current vs mode, 10 presses
+at `switch-then-press:2000`, p50:
+
+| Scenario | current | prune | subtree cache |
+|---|---|---|---|
+| dense-list | ~790 | 249 | 166 |
+| long-feed | ~1,360 | 163 | 251 |
+| edge-cases | ~640 | 259 | 138 |
+| form | ~90 | 94 | 53 |
+
+Prune visited 3–8× fewer nodes but lost the 3 labels of edge-cases'
+fixed popover (its DOM parent is far below the viewport). Subtree cache
+lost nothing. Subtree cache was chosen.
+
+**PR 3** (`pr3-<scenario>`): branch `perf/browser-walk` vs main
+`1bfa07c`, telemetry release builds, 10 presses per build:
+
+| Scenario | p50 2000 main → PR 3 | p95 2000 | repeat-press miss (p95) | target CPU |
+|---|---|---|---|---|
+| dense-list | 721 → 165 | 730 → 175 | 742 → 170 | 573 → 167 |
+| long-feed | 1,296 → 243 | 1,360 → 249 | 1,350 → 243 | 1,003 → 226 |
+| edge-cases | 608 → 133 | 631 → 144 | 616 → 134 | 484 → 131 |
+| form | 90 → 53 | 104 → 58 | 95 → 50 | 91 → 62 |
+| nested-menu | 86 → 48 | 100 → 55 | 93 → 49 | 85 → 56 |
+| tabs | 87 → 46 | 100 → 56 | 89 → 48 | 94 → 57 |
+
+A/A (main vs main, dense-list): 744 vs 731, so ~2 % noise. Desktop
+unchanged (explorer-folder 156 vs 154, vscode-repo 80 vs 75, 5 presses).
+jumpkey private bytes +5–17 MB after big walks. `walk_diff.py`: no
+missing elements on any scenario; PR 3 adds the same 4 disabled
+Vivaldi buttons in some presses (see review #41). A probe build logged
+those buttons as `IsEnabled=true` in 6/8 one-call fetches.
+
+Also seen: main's first press on dense-list (the batch's first, cold
+Vivaldi) still showed nothing after the #53 fix's 3 attempts (~370 ms,
+6 nodes visited, no `Document`).
+
+---
+
 ## 2026-11-21: empty first press fix (#53, roadmap step 2 PR 2)
 
 Branch `fix/browser-empty-first-press` vs main `6168e3c`, telemetry
