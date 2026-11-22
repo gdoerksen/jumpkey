@@ -57,6 +57,14 @@ window_exe = "vivaldi.exe"
 settle_ms = 3000
 
 [[scenario]]
+name = "edge-cases"
+description = "Inner scroller with sticky header, fixed bar, fixed popover from an off-screen parent, overflowing child (walker changes must keep these)"
+exe = ["{LOCALAPPDATA}\\Vivaldi\\Application\\vivaldi.exe", "{ProgramFiles}\\Vivaldi\\Application\\vivaldi.exe"]
+args = ["--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check", "--new-window", "{fixtures_url}/edge-cases.html"]
+window_exe = "vivaldi.exe"
+settle_ms = 3500
+
+[[scenario]]
 name = "tabs"
 description = "Tab strip where every tab has a close button (review #25)"
 exe = ["{LOCALAPPDATA}\\Vivaldi\\Application\\vivaldi.exe", "{ProgramFiles}\\Vivaldi\\Application\\vivaldi.exe"]

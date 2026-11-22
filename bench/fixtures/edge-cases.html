@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: edge cases</title>
+<style>
+  body { font: 13px system-ui, sans-serif; margin: 0; padding-bottom: 60px; }
+  h2 { font-size: 14px; margin: 10px 12px 4px; }
+  /* 1. An inner scroll container (most web apps scroll a div, not the
+        page) with its own sticky header. */
+  #scroller { height: 260px; overflow: auto; margin: 0 12px; border: 1px solid #ccc; }
+  #scroller header { position: sticky; top: 0; background: #f3f3f3; padding: 4px 8px; display: flex; gap: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; height: 24px; padding: 0 8px; border-bottom: 1px solid #eee; }
+  /* 2. A child drawn well outside its small parent. */
+  #tiny { position: relative; width: 40px; height: 20px; margin: 10px 12px; background: #eee; }
+  #tiny button { position: absolute; left: 220px; top: -4px; }
+  /* 3. A zero-size wrapper: display: contents has no box of its own. */
+  #contents { display: contents; }
+  .strip { display: flex; gap: 8px; margin: 6px 12px; }
+  /* 4. A fixed bottom bar, a direct child of <body>. */
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; height: 44px; background: #fafafa;
+         border-top: 1px solid #ccc; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
+  /* 5. A fixed popover whose DOM parent is far below the viewport. */
+  #popover { position: fixed; top: 80px; right: 24px; width: 220px; padding: 8px; background: #fff;
+             border: 1px solid #888; box-shadow: 0 2px 8px #0003; display: flex; flex-direction: column; gap: 6px; }
+  article { border: 1px solid #ddd; border-radius: 6px; margin: 10px 12px; padding: 8px; }
+</style>
+</head>
+<body>
+<!-- Content a pruning walker could lose (roadmap step 2). Deterministic.
+     Every visible target here must be found by every walker variant;
+     scripts/walk_diff.py compares the role + rect sets. -->
+<h2>Inner scroller</h2>
+<div id="scroller">
+  <header><button>Sort</button><button>Filter</button><button>Refresh</button></header>
+  <div id="rows"></div>
+</div>
+
+<h2>Overflowing child</h2>
+<div id="tiny"><button>Outside its parent</button></div>
+
+<h2>Zero-size wrapper</h2>
+<div class="strip"><span id="contents"><button>Wrapped one</button><button>Wrapped two</button><a href="#w3">Wrapped link</a></span></div>
+
+<main id="feed"></main>
+
+<div id="bar"><button>Back</button><button>Next</button><a href="#help">Help</a><input type="text" aria-label="Quick note"></div>
+
+<script>
+  let seed = 4242;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const rows = document.getElementById("rows");
+  for (let i = 0; i < 150; i++) {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = `<input type="checkbox" aria-label="Pick ${i + 1}"><a href="#r${i + 1}">Row ${i + 1}</a><button>Open ${i + 1}</button>`;
+    rows.appendChild(row);
+  }
+  const feed = document.getElementById("feed");
+  for (let i = 0; i < 200; i++) {
+    const a = document.createElement("article");
+    a.innerHTML = `<b>Item ${i + 1}</b> ${"lorem ipsum ".repeat(4 + rnd(8))}` +
+      `<div class="strip"><button>Like</button><button>Share</button><a href="#i${i + 1}">Open</a></div>`;
+    feed.appendChild(a);
+    if (i === 180) {
+      // The popover lives inside an article that is far below the
+      // viewport, but `position: fixed` draws it at the top right.
+      const p = document.createElement("div");
+      p.id = "popover";
+      p.innerHTML = `<button>Popover action</button><button>Dismiss</button><a href="#more">Popover link</a>`;
+      a.appendChild(p);
+    }
+  }
+</script>
+</body>
+</html>

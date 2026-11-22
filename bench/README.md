@@ -100,6 +100,7 @@ identical on every run and machine:
 | `form` | Vivaldi | inputs, selects, checkboxes, radios |
 | `nested-menu` | Vivaldi | ARIA menubar with an open nested menu |
 | `tabs` | Vivaldi | 30 tabs, each with a close button |
+| `edge-cases` | Vivaldi | content a smarter walker could lose: an inner scroller with a sticky header, a fixed bottom bar, a fixed popover whose parent is scrolled far away, a child drawn outside its parent, a `display: contents` wrapper |
 | `edge-dense-list` | Edge | `dense-list.html`, for machines without Vivaldi |
 | `explorer-folder` | File Explorer | `fixtures/folder/` (200 files, generated on first run) |
 | `vscode-repo` | VS Code | this repo with two files open |
@@ -123,6 +124,33 @@ Multi-window scopes (`all_windows`, `active_monitor`) search every
 visible window, so their numbers depend on what else is open. Close other
 windows for comparable runs; `visible_app_windows` is recorded per
 press.
+
+## Checking the elements found, not just the time
+
+A walker change has to find the **same elements**, not only find them
+faster. A telemetry build (`--features telemetry`) run with
+`JUMPKEY_DUMP_WALK` set appends one JSON line per UI Automation walk:
+the exe basename, `visited` / `collected` counts, the window rect and
+each element's role and rect. No names, titles or URLs.
+
+- `JUMPKEY_DUMP_WALK=1` writes `%LOCALAPPDATA%\jumpkey\telemetry\walks.jsonl`.
+  pick-bench sandboxes `LOCALAPPDATA` per build, so set it in the shell
+  before an A/B and each build gets its own file under
+  `bench/results/<run-id>/sandbox/<build>-<scope>/localappdata/`.
+  Run one scenario per invocation so the file holds one page.
+- Any other value is the folder to write `walks.jsonl` into (for a
+  manual run).
+
+Then compare:
+
+```text
+python scripts\walk_diff.py <A>\walks.jsonl <B>\walks.jsonl
+```
+
+It prints what B is missing and what it added compared with A (rects
+relative to the window, so a moved window still matches), and exits 1
+if anything is missing. The dump is a diagnostic, not part of the bench
+contract below.
 
 ## Getting stable numbers
 
