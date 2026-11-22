@@ -106,6 +106,11 @@ identical on every run and machine:
 | `vscode-repo` | VS Code | this repo with two files open |
 | `terminal-split` | Windows Terminal | two split panes |
 
+`fixtures/scroll-areas.html` isn't a scenario. It's the scroll mode
+(#54) test page: six scroll containers (the page, a sidebar, a
+horizontal code block, a card strip, and a nested pair) and two decoys
+that must not count.
+
 Apps that aren't installed are skipped. `--manual` benchmarks whatever
 window you focus instead.
 

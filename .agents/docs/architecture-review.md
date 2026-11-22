@@ -9,6 +9,8 @@ lists further down are kept for history._
 _Roadmap revised 2026-11-22 after steps 1–2: owner decisions on the
 library, publishing and portability (round 7), a portability guard step,
 and the freshness work moved last._
+_Step 4 (hook spike) done 2026-11-22: findings under #34, with notes on
+#26 and #54._
 
 Overall: the design is good. The pure logic is cleanly separated from the
 Windows code, and the speed work is careful and well documented. The weak
@@ -32,7 +34,7 @@ a cold browser search is 45–245 ms on the fixtures; desktop apps take
 | 1 | **Done (2026-11-21).** Small correctness fixes: reload safety (#8), warming-hook "invalidate on move" (#10), the **quick fix** for the ID/cache bug (issue #22, weakness 6) | Silent config resets, wasted searches, wrong clicks | — | S each |
 | 2 | **Done (2026-11-22).** Faster browser walk (#41) and the empty first press (#53). A spike compared pruning off-viewport subtrees with a one-call subtree cache; the cache won (no labels lost) and shipped: dense-list 721 → 165 ms, long-feed 1,296 → 243 ms. The prune variant stays on branch `spike/browser-walk` | The slowest part of the existing features | — | M |
 | 3 | **Done (2026-11-22).** The core already built on Linux (the `tracing-appender` failure was wasm-only) and all 123 core tests passed there; only 3 Windows-only imports in `main.rs` failed `-D warnings`. Now guarded by a `check / linux` CI job (clippy + tests, default and `telemetry`) and `cargo script check-linux` (clippy for Linux, tests in WSL when available). Pure helpers still inside `src/windows` (walk retry policy, `is_on_screen`, walk-dump JSON, overlay layout maths) aren't covered; they move to the core in step 6. Original item: **Portability guard** (weakness 2, round 7): `cargo check` and `cargo test --lib` for `x86_64-unknown-linux-gnu` in CI and in the local checks, and fix whatever doesn't build (e.g. `tracing-appender`, Windows-only deps not behind `cfg`) | Makes "portable core" a check rather than an intention, before steps 5–6 add a lot of core code | — | S |
-| 4 | **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them (the one-call tree fetch from step 2 should make this cheap)? Record what the hook delivers as **platform-neutral key events** (physical key, modifiers, down/up), the seam a macOS event tap would fill | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
+| 4 | **Done (2026-11-22).** The design holds: in 9 menu cases (Win32, Win11 XAML, Chromium, WinUI) a no-activate overlay plus `WH_KEYBOARD_LL` kept every menu open and no swallowed key leaked. Jumpkey's own chords must be matched **in the hook** while a mode is active (passing them to `RegisterHotKey` closes Win32 and Chromium menus). Chromium exposes ScrollPattern only on scroll containers that are in its accessibility tree. `KeyEvent` landed in the core (`src/input.rs`). Findings under #34; prototype on branch `spike/hook`. Original item: **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them (the one-call tree fetch from step 2 should make this cheap)? Record what the hook delivers as **platform-neutral key events** (physical key, modifiers, down/up), the seam a macOS event tap would fill | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
 | 5 | **Scroll mode v1** (#54) on the hook from step 4, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use | 4 | M |
 | 6 | **State machine + no-activate pick overlay** (Appendix A, #26), with the pick flow moved out of `main.rs` (#3) into the **platform-free core**: it consumes commands and key events and talks to `ElementSource` / overlay / input traits in neutral types, tested with fakes. The ID/cache thorough fix (`Snapshot`, weakness 6) lands here | Removes queued hotkeys (#15, #47) and the re-search after every pick (#48), gives menu mode a home, and is where the portability seams get designed from real callers (weakness 1) | 3, 5 | L |
 | 7 | Per-monitor overlays (#12, #32, #37), then menu mode (#33) | Mixed-DPI correctness, per-keystroke cost, the menu goal | 6 | L |
@@ -902,7 +904,7 @@ on, and for Gmail rows.
 
 ## 26. The overlay takes keyboard focus, which may close transient UI
 
-> **Status (2026-11-21):** open. The owner chose the no-activate + keyboard-hook model for scroll mode (#54), which makes scroll mode the first production user of this design.
+> **Status (2026-11-22):** **alternative design proven** by the step 4 spike (#34): with the overlay never activated and keys read by a low-level hook, every tested menu, dropdown and suggestion list stayed open and swallowed keys didn't reach it. The pick overlay still takes focus today; it moves to the no-activate model in step 6.
 
 `run_pick` shows the overlay with `SW_SHOWNOACTIVATE`, then immediately
 calls `SetForegroundWindow` + `SetFocus` on it so keystrokes reach it. When
@@ -1364,7 +1366,7 @@ should include an open menu from each.
 
 ## 34. The riskiest assumption: does a topmost no-activate overlay keep menus open?
 
-> **Status (2026-11-21):** open. Proposed as roadmap step 2, widened to also answer scroll mode's questions (#54).
+> **Status (2026-11-22):** **answered** (roadmap step 4). Yes, with one change to the hotkey design. Findings below; the prototype is `examples/hook_spike.rs` on branch `spike/hook` (not merged).
 
 The whole menu plan relies on this: **showing a non-activating, topmost,
 layered window over an open menu does not close the menu.** Win32
@@ -1387,6 +1389,105 @@ A submenu created *after* the overlay is shown appears above it. That's
 fine in practice, because the overlay is hidden while acting and re-shown
 afterwards (re-asserting `HWND_TOPMOST`), but it explains a class of
 "labels hidden behind a popup" bugs to watch for.
+
+### Findings (2026-11-22, roadmap step 4)
+
+The spike opened each menu itself (synthetic input, no user needed),
+showed a `WS_EX_NOACTIVATE | TOPMOST | LAYERED | TRANSPARENT | TOOLWINDOW`
+window over it, installed `WH_KEYBOARD_LL` and sent tagged keys (its own
+events carry a `dwExtraInfo` marker, so the hook can tell them from other
+injected input). Notepad wasn't tested: the owner's Notepad was open and
+the spike doesn't touch it. A Win32 window of the spike's own covers
+classic `#32768` menus instead. Results were the same in two full runs.
+
+| App | Menu | How "open" was detected | Survives overlay | Survives hook | Esc leaked | Down leaked | Hook-matched chord: menu survives | Chord via `RegisterHotKey`: menu survives / fires |
+|---|---|---|---|---|---|---|---|---|
+| own Win32 window | context (`#32768`) | `#32768` + WinEvent | yes | yes | no | no | yes | **no** / yes |
+| own Win32 window | system menu | `#32768` + WinEvent | yes | yes | no | no | yes | **no** / yes |
+| Explorer | folder context (Win11 XAML) | popup HWND + UIA focus | yes | yes | no | no | yes | yes / yes |
+| Explorer | system menu | `#32768` + WinEvent | yes | yes | no | no | yes | **no** / yes |
+| Desktop | context (Win11 XAML) | popup HWND + UIA focus | yes | yes | no | no | yes | yes / yes |
+| Vivaldi | page context | popup HWND + WinEvent | yes | yes | no | no | yes | **no** / yes |
+| Vivaldi | `<select>` | popup HWND + UIA expanded | yes | yes | no | no | yes | yes / yes |
+| Vivaldi | address suggestions | new list items in the window | yes | yes | no | no | yes | yes / yes |
+| Settings (WinUI) | ComboBox flyout | UIA expanded only | yes | yes | no | n/a¹ | yes | yes / yes |
+
+¹ The flyout moved focus on its own while the spike watched, so a leak
+couldn't be measured that way. Esc, the stronger test, didn't leak.
+
+1. **Menus stay open.** A no-activate topmost window over an open menu
+   didn't close any of them. Swallowing keys in the hook kept them away
+   from every menu: Esc would close the menu if it leaked, and it never
+   did.
+2. **Hotkeys: match the chord in the hook while a mode is active.**
+   `RegisterHotKey` still fires with a menu open. But the chord's
+   modifiers reach the app first, and pressing Alt closes Win32 menus and
+   Chromium's context menu (4 of 9 cases). With the hook recognising the
+   chord itself and swallowing all of it (modifiers included), every menu
+   survived (9 of 9). `WM_HOTKEY` then doesn't fire, as expected.
+   **Decision:** `RegisterHotKey` while idle; while a mode is active, the
+   hook matches jumpkey's own chords and swallows them. That needs a
+   platform-free chord matcher over `KeyEvent` (step 5).
+3. **A lone Alt tap passes through and activates the app's menu bar.**
+   Modifiers pass through the hook by design, so pressing and releasing
+   Alt alone during a mode puts the target in menu-bar mode (seen on the
+   spike's own window). Step 5 must handle it, for example by swallowing
+   a lone Alt or injecting a harmless key between press and release (the
+   usual "mask key" trick).
+4. **Z-order.** When a submenu opened *after* the overlay, it appeared
+   above the overlay in one of the two cases that opened a submenu
+   window (the desktop menu). Re-asserting `HWND_TOPMOST` put the overlay
+   back on top. Rule for step 7: re-assert topmost whenever a new popup
+   appears.
+5. **"A menu is open" has no single signal.**
+   - Win32 menus: a `#32768` window and `EVENT_SYSTEM_MENUPOPUPSTART`.
+   - Win11 XAML menus: a popup window and UIA focus on a menu item, with
+     no WinEvent.
+   - Chromium's context menu: a popup window and the WinEvent.
+   - A `<select>`: a popup window plus the expanded state.
+   - Vivaldi's address suggestions: no window at all, since they're drawn
+     inside Vivaldi's own UI.
+   - A WinUI ComboBox: only the UIA expanded state.
+
+   Menu mode (#33) needs a combination of these. UIA focus-in-a-menu plus
+   ExpandCollapse is the most general pair.
+6. **Hook speed.** From `SendInput` to the hook callback: p50 0.1 ms,
+   p95 0.24 ms, max 0.5 ms (100 events per run, 3 runs).
+7. **Hook stalls** (default `LowLevelHooksTimeout`, i.e. not set in the
+   registry; Windows build 26300):
+   - A callback that takes longer than **~320 ms** loses that key to the
+     app; the leak showed up 318–319 ms after the press. A 300 ms stall
+     didn't leak.
+   - The hook was **not removed**: after single 1 s and 5 s stalls, and
+     after 3, 10 and 20 timeouts in a row, it still received and
+     swallowed keys. Removing and re-installing it also worked.
+   - **Design for step 5:** run the hook on a **dedicated thread** whose
+     callback only maps the event and posts it, so no UI or UIA work can
+     ever stall it. Install the hook per mode session. Skip the sentinel
+     watchdog until a stall is actually seen in daily use.
+8. **`KeyEvent` on real hook data.**
+   - Auto-repeat is derived correctly by `KeyTracker` (the hook reports
+     no repeat flag).
+   - VK-only input (scan code 0) maps correctly through
+     `MapVirtualKeyExW`.
+   - Untagged injected input is told apart and passed through.
+   - Right Alt on the US layout arrives as plain Alt, with no fake Ctrl.
+     AltGr layouts are untested.
+9. **A long pause between picks is fine** (`menus-wait 60`). Each of the
+   9 menus was opened, then the overlay and hook sat over it for 60 s
+   with nothing happening, the menu polled once a second.
+   - Every menu was still open after 60 s.
+   - The foreground never changed.
+   - The overlay was still above the menu wherever the menu has a
+     window.
+   - After the wait, the hook still saw and swallowed keys, Esc didn't
+     leak, and a sentinel key arrived.
+
+   That fits how the timeout works: it only applies while the hook is
+   handling a key, so an idle hook costs nothing. In daily use a long
+   pause raises other risks: something else taking focus, the user
+   forgetting the mode is on, and a modifier released on the lock screen.
+   See scroll mode's Risks (#54).
 
 ## 35. Experiments need a home in the config and the architecture
 
@@ -2044,8 +2145,17 @@ containers are filtered out of every search (both the desktop search
 condition and the web filter require a clickable control type or
 pattern).
 
-**Status: designed, not implemented.** The owner wants to settle where it
-goes in the roadmap first.
+**Status: designed, not implemented.** Roadmap step 5. The step 4 spike
+(#34) answered its risks. **Design changes from the spike:**
+- The hook runs on a dedicated thread.
+- It matches jumpkey's chords itself.
+- A lone Alt tap must be handled.
+- Areas are discovered with a provider-side `FindAll`, which is faster
+  than the one-call tree fetch.
+- Chromium only exposes scroll containers that are in its accessibility
+  tree.
+
+Details in Keyboard hook, Area discovery and Risks below.
 
 ### Owner decisions
 
@@ -2083,11 +2193,22 @@ the home row in Dvorak and Colemak, like Homerow.
   Appendix A pattern (pure transition, effects run by a Win32 shell) on a
   small scale.
 - **Keyboard hook** (`src/windows/scroll/hook.rs`): `WH_KEYBOARD_LL`,
-  installed on the main thread only while the mode is active. It ignores
-  injected events, maps the scancode to a physical key, swallows bound
-  keys (and their key-ups) and posts a thread message to the main loop.
-  Keys with Ctrl or Alt held pass through (except Ctrl+N/P), so
-  registered hotkeys still arrive.
+  installed only while the mode is active, on a **dedicated hook thread**
+  whose callback only maps the event (`key_from_ll` into a
+  `KeyTracker`, giving a `jumpkey::input::KeyEvent`) and posts it to the
+  main loop (spike #34: a callback slower than ~320 ms loses keys).
+  - It ignores **only jumpkey's own** injected events (tagged through
+    `dwExtraInfo`, as the spike does) and treats other injected input as
+    real. Keys remapped by PowerToys Keyboard Manager or AutoHotkey
+    arrive injected: ignoring all injected input would pass a remapped
+    Esc straight through to the app. It swallows bound keys and their
+    key-ups.
+  - **jumpkey's own chords** (the scroll and pick hotkeys) are matched in
+    the hook and swallowed whole. Passing them through to
+    `RegisterHotKey` closes Win32 and Chromium menus.
+  - Other keys with Ctrl or Alt held pass through, except Ctrl+N/P.
+  - A lone Alt tap must not reach the app as a tap, or it activates the
+    menu bar.
 - **Area discovery** (`areas.rs`):
   - *Instant first area:* `ElementFromPoint(cursor)` if the cursor is in
     the foreground window, else the focused element; walk up to the
@@ -2129,16 +2250,48 @@ bindings, elevated windows (UIPI blocks the wheel input, #29).
 
 ### Risks
 
-- **Does Chromium expose ScrollPattern on web scroll containers?** If
-  not, v1 treats a Chromium window as one area (the wheel still works,
-  only area switching is lost). The spike answers this first.
+- **Does Chromium expose ScrollPattern on web scroll containers?**
+  **Partly** (spike, #34). It exposes it on the page and on any scroll
+  container that is in Chromium's accessibility tree: one with a
+  landmark, a role, a label or a `tabindex`. Plain `<div>` scrollers are
+  pruned. On the fixture (`bench/fixtures/scroll-areas.html`), 2 of 6
+  areas were found as written, and 5 of 6 once marked up.
+  - **Speed** (Vivaldi, scroll-areas / dense-list / long-feed):
+    - `FindAll(Descendants, IsScrollPatternAvailable)`: 11 / 38 / 58 ms.
+    - The one-call tree plus a filter: 14 / 69 / 116 ms.
+    - `ElementFromPoint` plus walking up: 2–5 ms.
+
+    Same from the first run.
+  - **So:** the first area comes from the point and walking up; all areas
+    from `FindAll` on a worker. A plain-div scroller can still be
+    scrolled when the pointer is over it, since the wheel goes there. It
+    just isn't a Tab or digit target.
+  - Real-site counts are pending (owner run).
 - **Old Win32 apps ignore wheel deltas under 120.** Either gather the
   delta into whole notches for those frameworks (by `FrameworkId`, #39)
   or accept stepped scrolling there.
-- **Hook timeouts.** Windows silently removes a low-level hook whose
-  thread doesn't answer in time, so the main thread must do no UIA work
-  while the mode is active. All UIA calls go to workers.
-- **Stuck keys.** Track key-ups; clear the velocity on every exit.
+- **Hook timeouts.** Measured (#34): past ~320 ms the key goes to the
+  app. The hook wasn't removed, even after 20 timeouts in a row on build
+  26300, but the dedicated hook thread makes stalls impossible anyway. UIA
+  calls still go to workers.
+- **Stuck keys.** Track key-ups; clear the velocity and reset the
+  `KeyTracker` on every exit.
+- **Keys the hook never sees.** The lock screen, Ctrl+Alt+Del and UAC
+  prompts run on a secure desktop that low-level hooks don't see. If a
+  modifier is released there, `KeyTracker` still thinks it's held and
+  chord matching goes wrong. Reset the tracker on session lock and
+  desktop switch (`WTSRegisterSessionNotification`). Possibly also
+  re-read the real modifier state with `GetAsyncKeyState` when a mode
+  starts.
+- **Other hooks.** The hook installed last sees keys first. PowerToys
+  and AutoHotkey run their own low-level hooks. Installing jumpkey's
+  hook fresh for each mode session keeps it first for that session.
+- **Elevated windows.** A non-elevated jumpkey probably neither sees keys
+  typed into an administrator window nor acts on it (#29). Untested.
+- **The user forgets the mode is on.** While the mode is active, its
+  bound keys are swallowed system-wide. Exiting on any unbound key (and
+  passing it through) limits the damage. A clear indicator, and maybe an
+  idle timeout, are design choices for step 5.
 
 ### How scroll mode fits the architecture
 

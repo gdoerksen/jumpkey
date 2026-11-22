@@ -14,6 +14,45 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 
 ---
 
+## 2026-11-22: hook spike (roadmap step 4)
+
+`examples/hook_spike.rs` on branch `spike/hook`, release build, same
+machine. Findings and the menu matrix: architecture review #34.
+
+**Hook latency** (`SendInput` → `WH_KEYBOARD_LL` callback, 100 tagged
+events, 3 runs): p50 99–108 µs, p95 235–241 µs, max 381–522 µs. A
+fourth run, started right after a build, showed p50 66 µs but p95 4.3 ms
+and one event at 328 ms. That is delivery delay on a busy machine, not
+time in the callback, and no key leaked.
+
+**60 s idle wait** (`menus-wait 60`): all 9 menus still open, the overlay
+still above them, and the hook still swallowing keys afterwards.
+
+**Hook stalls** (`LowLevelHooksTimeout` not set):
+
+| Stall in callback | Stalled key leaked | Leak after | Later keys reach hook and are swallowed |
+|---|---|---|---|
+| 300 ms | no | — | 5/5 |
+| 1,000 ms | yes | 319 ms | 5/5 |
+| 5,000 ms | yes | 318 ms | 5/5 |
+| 3 / 10 / 20 × 500 ms in a row | — | — | yes (hook not removed) |
+
+**Scroll areas** (Vivaldi, throwaway profile, 1600×1000, 5 runs; median
+ms, scrollable areas found):
+
+| Page | `FindAll(IsScrollPatternAvailable)` | one-call tree + filter | point + walk up | areas found |
+|---|---|---|---|---|
+| scroll-areas | 11 | 14 (238 nodes) | 2 | 2 of 6 (page, sidebar) |
+| scroll-areas, marked up¹ | 11 | 14 | 2 | 5 of 6 |
+| dense-list | 38 | 69 (2,111 nodes) | 3 | 1 (page) |
+| long-feed | 58 | 116 (3,706 nodes) | 3 | 1 (page) |
+
+¹ The same page with `tabindex` on the code block, `role="region"` on
+the card strip and `role="group"` on the outer nested scroller. The
+unmarked inner scroller stays invisible.
+
+---
+
 ## 2026-11-22: faster browser walk (roadmap step 2 PR 3) and the spike
 
 **Spike** (`spike-<mode>-<scenario>`, branch `spike/browser-walk` at
