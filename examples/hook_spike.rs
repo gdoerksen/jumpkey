@@ -1024,6 +1024,91 @@ mod spike {
         None
     }
 
+    /// Open the menu, put the overlay and the production hook over it, wait
+    /// `secs` doing nothing (polling the menu once a second), then check the
+    /// menu, the z-order and that the hook still swallows keys.
+    fn run_wait_case(ht: &HookThread, env: &Env, case: &Case, secs: u64) -> String {
+        let head = format!("| {} | {} |", case.app, case.menu);
+        let Some(t) = (case.setup)(env) else {
+            return format!("{head} skipped | - | - | - | - | - | - | - | target not available |");
+        };
+        let mut note = String::new();
+        if !force_foreground(t.hwnd) {
+            note.push_str("foreground refused; ");
+        }
+        let det = Detector::new(&env.uia, t.pids.clone(), case.in_window.then_some(t.hwnd));
+        if !((case.open)(env, &t) && wait_open(&det, 3000)) {
+            esc_untagged(2);
+            return format!("{head} unknown | - | - | - | - | - | - | - | menu not detected |");
+        }
+        sleep(300);
+        let s0 = det.sig();
+        let ov = Win(OVERLAY.load(SeqCst));
+        ht.show(t.hwnd.rect());
+        reset_tracker();
+        MODE.store(1, SeqCst);
+        ht.cmd(CMD_HOOK_ON);
+        sleep(300);
+        let z0 = det.sig().menu_window().and_then(|m| above(ov, m));
+        let fg0 = foreground();
+        let mut fg_same = true;
+        let mut closed_at = None;
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(secs) {
+            if closed_at.is_none() && !det.sig().open() {
+                closed_at = Some(t0.elapsed().as_secs());
+            }
+            if foreground() != fg0 {
+                fg_same = false;
+            }
+            sleep(1000);
+        }
+        let s1 = det.sig();
+        let open_after = s1.open();
+        let z1 = s1.menu_window().and_then(|m| above(ov, m));
+        // Keys after the wait.
+        let m = log_mark();
+        tap_sc(SC_J, false, true);
+        tap_sc(SC_DOWN, true, true);
+        sleep(300);
+        tap_sc(SC_ESC, false, true);
+        sleep(500);
+        let recs = log_since(m);
+        let saw = recs
+            .iter()
+            .any(|r| r.key == Key::Named(NamedKey::Esc) && r.down)
+            && recs
+                .iter()
+                .any(|r| r.key == Key::Named(NamedKey::Down) && r.down);
+        let esc_leaked = open_after.then(|| !det.sig().open());
+        let m = log_mark();
+        tap_sc(SC_F24, false, true);
+        sleep(300);
+        let sentinel = log_since(m)
+            .iter()
+            .any(|r| r.key == Key::Named(NamedKey::F(24)));
+        ht.cmd(CMD_HIDE);
+        ht.cmd(CMD_HOOK_OFF);
+        MODE.store(0, SeqCst);
+        esc_untagged(3);
+        if s0.names() != s1.names() && open_after {
+            note.push_str(&format!("signals changed to {}; ", s1.names()));
+        }
+        format!(
+            "{head} {} | {} | {} | {} | {} / {} | {} | {} | {} | {} |",
+            s0.names(),
+            yn(Some(open_after)),
+            closed_at.map(|c| format!("{c} s")).unwrap_or("-".into()),
+            yn(Some(fg_same)),
+            yn(z0),
+            yn(z1),
+            yn(Some(saw)),
+            yn(esc_leaked),
+            yn(Some(sentinel)),
+            note.trim_end_matches("; ")
+        )
+    }
+
     fn launch_vivaldi(url: &str, profile: &std::path::Path) -> Result<(Child, Win)> {
         let exe = std::env::var("LOCALAPPDATA")? + r"\Vivaldi\Application\vivaldi.exe";
         let before: HashSet<Win> = top_windows().into_iter().collect();
@@ -1142,7 +1227,11 @@ mod spike {
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
         match args.first().map(String::as_str) {
-            Some("menus") => menus(args.get(1).map(String::as_str)),
+            Some("menus") => menus(args.get(1).map(String::as_str), None),
+            Some("menus-wait") => {
+                let secs: u64 = args.get(1).context("menus-wait SECS [filter]")?.parse()?;
+                menus(args.get(2).map(String::as_str), Some(secs))
+            }
             Some("stall") => stall(),
             Some("probe-viv") => probe_viv(),
             Some("scroll-areas") => scroll_areas(&args[1..]),
@@ -1243,7 +1332,7 @@ mod spike {
         println!("  untagged injected seen {untagged}, swallowed {untagged_swallowed} (want 0); real keys during run {real}");
     }
 
-    fn menus(only: Option<&str>) -> Result<()> {
+    fn menus(only: Option<&str>, wait: Option<u64>) -> Result<()> {
         let uia = UIAutomation::new()?;
         let ht = HookThread::start();
         println!(
@@ -1470,12 +1559,16 @@ mod spike {
             println!("Notepad cases skipped: your Notepad is open (the spike won't touch it).");
         }
         let mut rows = Vec::new();
+        let mut wait_rows = Vec::new();
         for c in cases
             .iter()
             .filter(|c| only.map_or(true, |o| c.app.contains(o)))
         {
             eprintln!("-- {} / {}", c.app, c.menu);
-            rows.push(run_case(&ht, &env, c));
+            match wait {
+                Some(secs) => wait_rows.push(run_wait_case(&ht, &env, c, secs)),
+                None => rows.push(run_case(&ht, &env, c)),
+            }
         }
 
         // Cleanup.
@@ -1495,6 +1588,15 @@ mod spike {
         }
         drop(ht);
 
+        if let Some(secs) = wait {
+            println!();
+            println!("| app | menu | open signal | menu open after {secs} s | closed after | foreground unchanged | overlay above menu (start / end) | then: hook saw keys | Esc leaked | sentinel seen | note |");
+            println!("|---|---|---|---|---|---|---|---|---|---|---|");
+            for r in &wait_rows {
+                println!("{r}");
+            }
+            return Ok(());
+        }
         println!();
         println!("| app | menu | open signal | survives overlay | overlay above menu | survives hook | Esc leaked | Down leaked | hook saw keys | hook-chord: menu ok / hook saw / WM_HOTKEY | RegisterHotKey: menu ok / WM_HOTKEY | submenu above overlay? / after re-assert | note |");
         println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
