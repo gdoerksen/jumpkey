@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Browser presses are 2–5× faster.** jumpkey now fetches a browser window's whole accessibility tree in one call and searches it in memory, instead of asking the browser about each element one at a time. On the benchmark pages in Vivaldi (median, switch then press): a 500-row list 721 → 165 ms, a long feed 1,296 → 243 ms, a form 90 → 53 ms, and the browser itself spends about 4× less CPU on each press. The same labels are found. If the one-call fetch fails, jumpkey falls back to the old way. Known quirk: Vivaldi sometimes reports a few disabled toolbar buttons (back/forward on a fresh tab) as enabled in the one-call fetch, so they can get labels that do nothing.
 - **Renamed from `keyhop` to `jumpkey`.** This is a fork of [rsaz/keyhop](https://github.com/rsaz/keyhop) by Richard Zampieri, under the same MIT OR Apache-2.0 license. **Breaking, with no automatic migration:**
     - The crate, binary and library are now `jumpkey` / `jumpkey.exe` (`use jumpkey::...`).
     - Config moves from `%APPDATA%\keyhop\config.toml` to `%APPDATA%\jumpkey\config.toml`; copy your old file across by hand to keep your settings.

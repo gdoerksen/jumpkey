@@ -1580,7 +1580,8 @@ pub(crate) fn walk_window(
         hit_element_cap = tracing::field::Empty,
         attempts = tracing::field::Empty,
         documents = tracing::field::Empty,
-        empty_documents = tracing::field::Empty
+        empty_documents = tracing::field::Empty,
+        tree_cached = tracing::field::Empty
     )
     .entered();
     #[cfg(feature = "telemetry")]
@@ -1594,16 +1595,38 @@ pub(crate) fn walk_window(
     };
     let handle = Handle::from(hwnd.0 as isize);
     let mut retries: u32 = 0;
-    let (out, stats) = loop {
+    let (out, stats, tree_cached) = loop {
         let hosts_web_content = is_browser && {
             let _s = tel_span!("activate").entered();
             activate_browser_accessibility(hwnd)
         };
-        let root = {
-            let _s = tel_span!("root").entered();
-            automation
-                .element_from_handle_build_cache(handle, cache_request)
-                .context("element_from_handle_build_cache failed")?
+        // Browser windows: fetch the whole control-view tree in one UIA
+        // call and walk it in memory (roadmap step 2, #41). The old
+        // hop-by-hop walk made two cross-process calls per node, ~98 %
+        // of a press on a big page. If the one-call fetch fails (e.g. a
+        // timeout on a huge page), fall back to the hop-by-hop walk.
+        let search = tel_span!("search").entered();
+        let cached_tree = if is_browser {
+            match fetch_browser_tree(automation, handle) {
+                Ok(root) => Some(root),
+                Err(e) => {
+                    tracing::warn!(error = ?e,
+                        "fetching the browser tree in one call failed; walking node by node");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let tree_cached = cached_tree.is_some();
+        let root = match cached_tree {
+            Some(root) => root,
+            None => {
+                let _s = tel_span!("root").entered();
+                automation
+                    .element_from_handle_build_cache(handle, cache_request)
+                    .context("element_from_handle_build_cache failed")?
+            }
         };
 
         let mut out = Vec::with_capacity(64);
@@ -1611,8 +1634,9 @@ pub(crate) fn walk_window(
             window_rect: cached_bounds(&root),
             ..WalkStats::default()
         };
-        let search = tel_span!("search").entered();
-        if is_browser {
+        if tree_cached {
+            walk_cached(&root, 0, &mut out, &mut stats);
+        } else if is_browser {
             let walker = automation
                 .get_control_view_walker()
                 .context("creating control-view tree walker failed")?;
@@ -1629,7 +1653,7 @@ pub(crate) fn walk_window(
         }
         drop(search);
         if !is_browser {
-            break (out, stats);
+            break (out, stats, tree_cached);
         }
         let unbuilt = stats.looks_unbuilt(out.len(), hosts_web_content);
         match walk_retry_delay(retries, unbuilt, skip_retry) {
@@ -1653,7 +1677,7 @@ pub(crate) fn walk_window(
                     // empty page. Don't make every press wait again.
                     map.insert(key, Instant::now());
                 }
-                break (out, stats);
+                break (out, stats, tree_cached);
             }
         }
     };
@@ -1677,6 +1701,7 @@ pub(crate) fn walk_window(
     tel_record!(walk, "attempts", u64::from(retries) + 1);
     tel_record!(walk, "documents", stats.documents as u64);
     tel_record!(walk, "empty_documents", stats.empty_documents as u64);
+    tel_record!(walk, "tree_cached", tree_cached);
     if tracing::enabled!(tracing::Level::DEBUG) {
         tracing::debug!(
             collected = post_dedup,
@@ -1688,6 +1713,7 @@ pub(crate) fn walk_window(
             attempts = retries + 1,
             documents = stats.documents,
             empty_documents = stats.empty_documents,
+            tree_cached,
             ?hwnd,
             is_browser,
             "walk_window done"
@@ -1775,6 +1801,58 @@ fn walk_recurse(
         }
     } else if is_document && is_on_screen(cached_bounds(el), stats.window_rect) {
         stats.empty_documents += 1;
+    }
+}
+
+/// Fetch a browser window's whole control-view tree, with every
+/// property and pattern the walker reads, in **one** UIA call. The
+/// returned root's descendants are reachable with `get_cached_children`
+/// without further cross-process calls; see [`walk_cached`].
+///
+/// The cache request is built per walk: that's a handful of in-process
+/// COM calls, negligible next to the fetch, and it keeps `walk_window`'s
+/// callers (including the parallel per-process workers) unchanged.
+fn fetch_browser_tree(automation: &UIAutomation, handle: Handle) -> anyhow::Result<UIElement> {
+    let req = build_cache_request(automation).context("building the tree cache request")?;
+    req.set_tree_scope(uiautomation::types::TreeScope::Subtree)?;
+    // Same view as the hop-by-hop walk's `get_control_view_walker`.
+    req.set_tree_filter(automation.get_control_view_condition()?)?;
+    let _s = tel_span!("fetch_tree").entered();
+    automation
+        .element_from_handle_build_cache(handle, &req)
+        .context("fetching the browser tree")
+}
+
+/// [`walk_recurse`] over a tree fetched by [`fetch_browser_tree`]:
+/// same limits, filters and stats, but children come from the cache
+/// instead of two cross-process calls per node.
+fn walk_cached(el: &UIElement, depth: usize, out: &mut Vec<WalkRecord>, stats: &mut WalkStats) {
+    stats.visited += 1;
+    stats.max_depth = stats.max_depth.max(depth);
+    if out.len() >= MAX_ELEMENTS_BROWSER {
+        stats.hit_element_cap = true;
+        return;
+    }
+    if let Some(record) = try_record(el, true) {
+        out.push(record);
+    }
+    let is_document = el.get_cached_control_type().ok() == Some(ControlType::Document);
+    if is_document {
+        stats.documents += 1;
+    }
+    if depth >= MAX_TREE_DEPTH_BROWSER {
+        stats.hit_depth_cap = true;
+        return;
+    }
+    let children = el.get_cached_children().unwrap_or_default();
+    if children.is_empty() {
+        if is_document && is_on_screen(cached_bounds(el), stats.window_rect) {
+            stats.empty_documents += 1;
+        }
+        return;
+    }
+    for child in &children {
+        walk_cached(child, depth + 1, out, stats);
     }
 }
 
