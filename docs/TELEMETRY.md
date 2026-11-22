@@ -107,7 +107,7 @@ fully handled (after the action ran, or after Esc).
 | `list_windows` | Listing and planning top-level windows (multi-window scopes). | `candidates`, `planned` |
 | `parallel_walks` | Walking other apps' windows on worker threads. | `groups` |
 | `worker` | One worker's share (one app), including its UI Automation setup. | `pid`, `windows` |
-| `walk` | One window's UI Automation walk. | `kind` (`browser`/`desktop`), `foreground`, `process.executable.name`, `visited`, `pre_dedup`, `collected`, `max_depth`, `hit_depth_cap`, `hit_element_cap` |
+| `walk` | One window's UI Automation walk. | `kind` (`browser`/`desktop`), `foreground`, `process.executable.name`, `visited`, `pre_dedup`, `collected`, `max_depth`, `hit_depth_cap`, `hit_element_cap`, `attempts` (1 + retries of a browser page that looked unbuilt, #53), `documents` and `empty_documents` (page documents seen, and on-screen ones with no children, in the last attempt) |
 | `activate`, `root`, `search`, `dedup` | Inside `walk`: waking Chromium's accessibility, fetching the root element, the tree search, removing nested duplicates. | |
 | `register` | Assigning element ids. | `n` |
 | `sort`, `labels` | Ordering elements by distance, generating labels. | `n` |
