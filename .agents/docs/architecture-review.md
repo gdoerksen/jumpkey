@@ -377,7 +377,7 @@ arrive.
 
 ## 10. The cache-warming hook reacts to every window, not just the foreground
 
-> **Status (2026-11-21):** open. `win_event_proc` (`src/windows/prewarm.rs:248`) still has no foreground check.
+> **Status (2026-11-21):** **done, differently** (owner, round 6). After the #22 fix the hotkey path can't use a walk by the warming thread at all, so a location change now just **invalidates** that window's cache entry instead of queueing a walk: no debounce, and any top-level window (invalidating is cheap, and multi-window scopes cache background windows too). The walk on a foreground change is unchanged. Re-walking on move comes back with the shared cache (step 6). Note: the hook only sees the top-level window's own location changes (moves and resizes); scrolling inside a page most likely doesn't raise it, which is #21's problem and scroll mode's "scrolled" signal.
 
 `win_event_proc` (`src/windows/prewarm.rs`) forwards
 `EVENT_OBJECT_LOCATIONCHANGE` for **any** top-level window in any process.
