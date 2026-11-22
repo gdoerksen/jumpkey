@@ -21,6 +21,8 @@ pub mod single_instance;
 pub mod splash_screen;
 pub mod startup;
 pub mod tray;
+#[cfg(feature = "telemetry")]
+mod walk_dump;
 pub mod window_picker;
 
 use std::collections::HashMap;
@@ -1557,6 +1559,28 @@ pub(crate) fn walk_window(
             is_browser,
             "walk_window done"
         );
+    }
+    #[cfg(feature = "telemetry")]
+    {
+        let exe = window_exe_basename(hwnd);
+        let window = root.get_cached_bounding_rectangle().ok().map(|r| Bounds {
+            x: r.get_left(),
+            y: r.get_top(),
+            width: r.get_width(),
+            height: r.get_height(),
+        });
+        let elements: Vec<(Role, Bounds)> = out.iter().map(|r| (r.role, r.bounds)).collect();
+        walk_dump::record(&walk_dump::WalkSummary {
+            exe: exe.as_deref(),
+            is_browser,
+            // SAFETY: no preconditions.
+            foreground: unsafe { GetForegroundWindow() } == hwnd,
+            window,
+            visited: stats.visited,
+            max_depth: stats.max_depth,
+            hit_element_cap: stats.hit_element_cap,
+            elements: &elements,
+        });
     }
     Ok(out)
 }
