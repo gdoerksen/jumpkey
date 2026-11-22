@@ -27,6 +27,7 @@ pub mod input;
 pub mod keyboard;
 pub mod layout_order;
 pub mod model;
+pub mod scroll;
 pub mod telemetry;
 
 #[cfg(windows)]
@@ -36,7 +37,7 @@ pub use action::Action;
 pub use backend::Backend;
 pub use config::Config;
 pub use hint::{ConsecutiveKeys, HintEngine, HintStrategy, DEFAULT_ALPHABET};
-pub use input::{Key, KeyEvent, KeyTracker, Mods, NamedKey};
+pub use input::{Chord, Key, KeyEvent, KeyTracker, Mods, NamedKey};
 pub use keyboard::{Geometry, Layout, LayoutChoice};
 pub use layout_order::HintOrder;
 pub use model::{Bounds, Element, ElementId, Role};

@@ -16,6 +16,7 @@ pub(crate) mod label_text;
 pub mod notification;
 pub mod overlay;
 pub mod prewarm;
+pub mod scroll;
 pub mod settings_window;
 pub mod single_instance;
 pub mod splash_screen;
@@ -64,6 +65,12 @@ use crate::config::ScopeMode;
 use crate::layout_order::{union_center, HintOrder};
 use crate::{tel_current, tel_record, tel_record_current, tel_span};
 use crate::{Action, Backend, Bounds, Element, ElementId, Role};
+
+/// `dwExtraInfo` on every input event jumpkey synthesizes (`SendInput`).
+/// jumpkey's low-level hooks ignore events carrying it and treat every
+/// other event, injected or not, as real: keys remapped by PowerToys or
+/// AutoHotkey arrive injected and must still count (spike #34).
+pub const JUMPKEY_INPUT_TAG: usize = 0x4A4B_5350; // "JKSP"
 
 /// Maximum tree depth we descend into for *desktop* apps. Native Win32 /
 /// WinUI / Electron trees are wide but rarely deep — twelve levels covers
@@ -1422,7 +1429,7 @@ fn click_at(el: &UIElement, button: MouseButton, count: u8) -> anyhow::Result<()
                         mouseData: 0,
                         dwFlags: flag,
                         time: 0,
-                        dwExtraInfo: 0,
+                        dwExtraInfo: JUMPKEY_INPUT_TAG,
                     },
                 },
             });
