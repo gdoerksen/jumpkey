@@ -8,8 +8,11 @@ license = "MIT OR Apache-2.0"
 authors = ["Graham Doerksen <46031209+gdoerksen@users.noreply.github.com>", "Richard Zampieri <br.developer@gmail.com>"]
 repository = "https://github.com/gdoerksen/jumpkey"
 homepage = "https://github.com/gdoerksen/jumpkey"
-documentation = "https://docs.rs/jumpkey"
 readme = "README.md"
+# Not published to crates.io: jumpkey ships as an MSI / GitHub release.
+# The library target is internal structure (benches, examples, tests),
+# not a public API (architecture review #18, round 7).
+publish = false
 keywords = ["keyboard", "accessibility", "productivity", "automation", "hotkey"]
 categories = ["accessibility", "gui", "os"]
 
