@@ -213,7 +213,23 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         }
     };
 
-    let mut config = Config::load_or_default();
+    // A broken config.toml starts jumpkey on defaults but leaves the file
+    // alone (nothing saves it unless the user does), and the user is told
+    // just before hotkeys are registered (below).
+    let (mut config, startup_config_error) = match Config::try_load() {
+        Ok(Some(cfg)) => {
+            tracing::info!("loaded config from disk");
+            (cfg, None)
+        }
+        Ok(None) => {
+            tracing::info!("no config file found, using defaults");
+            (Config::default(), None)
+        }
+        Err(e) => {
+            tracing::warn!(error = ?e, "config file is invalid, using defaults");
+            (Config::default(), Some(e))
+        }
+    };
     // Resolve the alphabet from the preset + flags every launch so users
     // who hand-edit `[hints]` to switch presets don't have to delete the
     // stale `alphabet` field by hand. Settings dialog Save also writes
@@ -260,6 +276,12 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     // owns the chord) are surfaced to the user but don't abort startup —
     // partial registration is better than nothing, and the user can fix
     // the broken chord in Settings.
+    //
+    // A broken config.toml is reported first: it explains why the chords
+    // (and everything else) are the defaults, which may also conflict.
+    if let Some(e) = startup_config_error {
+        notify_config_error(&e, "Using default settings for now");
+    }
     let outcome = Hotkeys::register_from_config(&config.hotkeys)?;
     let mut hotkeys = outcome.hotkeys;
     if !outcome.conflicts.is_empty() {
@@ -410,17 +432,29 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         // would route them through DefWindowProc and waste cycles.
         if msg.hwnd.0.is_null() && msg.message == WM_USER_RELOAD_CONFIG {
             tracing::info!("config-file change detected, reloading");
-            let new_config = Config::load_or_default();
-            if new_config != config {
-                apply_config(
-                    &new_config,
-                    &mut config,
-                    &mut runtime,
-                    &mut backend,
-                    &mut hotkeys,
-                    tray.as_mut(),
-                    /* announce = */ true,
-                );
+            // A missing file means defaults (the user deleted it on
+            // purpose). A file that doesn't parse keeps the current
+            // settings: applying defaults would silently reset every
+            // live setting on a typo or a half-written file (review #8).
+            match Config::try_load() {
+                Ok(loaded) => {
+                    let new_config = loaded.unwrap_or_default();
+                    if new_config != config {
+                        apply_config(
+                            &new_config,
+                            &mut config,
+                            &mut runtime,
+                            &mut backend,
+                            &mut hotkeys,
+                            tray.as_mut(),
+                            /* announce = */ true,
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = ?e, "config file is invalid; keeping current settings");
+                    notify_config_error(&e, "Keeping your previous settings");
+                }
             }
             continue;
         }
@@ -645,6 +679,17 @@ fn notify_hotkey_conflicts(conflicts: &[HotkeyConflict]) {
             "Some hotkeys couldn't be registered:\n\n{body}\n\n\
             Open Settings to choose a different chord."
         ),
+    );
+}
+
+/// Tell the user `config.toml` couldn't be read. `outcome` says what
+/// jumpkey does instead ("Keeping your previous settings", …). The
+/// error text comes from the TOML parser and names the line and column.
+#[cfg(windows)]
+fn notify_config_error(error: &anyhow::Error, outcome: &str) {
+    notification::warn(
+        "jumpkey: config.toml has an error",
+        &format!("{error:#}\n\n{outcome}. Fix the file and save it again to apply it."),
     );
 }
 

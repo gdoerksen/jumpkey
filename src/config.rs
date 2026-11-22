@@ -6,6 +6,10 @@
 //! drop-in upgradeable — existing users who never open Settings see no
 //! change in behavior.
 //!
+//! The app itself uses [`Config::try_load`] so it can tell "missing" from
+//! "malformed": a malformed file at startup runs on defaults with a
+//! warning, and a malformed file on hot reload keeps the current settings.
+//!
 //! All user-facing customization (hotkeys, hint alphabet, overlay colors,
 //! Windows startup, scope, performance) flows through this single struct
 //! so the Settings window has exactly one round-trip target.
@@ -345,30 +349,61 @@ impl Config {
 
     /// Attempt to load the config. Returns `Ok(None)` when the file simply
     /// doesn't exist (the common first-run case), `Err` for malformed TOML
-    /// or I/O failures.
+    /// or I/O failures. A parse error's message names the line and column,
+    /// so callers can show it to the user as is.
+    ///
+    /// Callers that already have a working config (the hot-reload path)
+    /// must keep it on `Err` rather than fall back to defaults: a typo or
+    /// a half-written file would otherwise reset every live setting.
     pub fn try_load() -> anyhow::Result<Option<Self>> {
         let Some(path) = Self::file_path() else {
             return Ok(None);
         };
+        Self::load_from(&path)
+    }
+
+    /// [`Self::try_load`] for an explicit path.
+    pub fn load_from(path: &std::path::Path) -> anyhow::Result<Option<Self>> {
         if !path.exists() {
             return Ok(None);
         }
-        let text = std::fs::read_to_string(&path)?;
+        let text = std::fs::read_to_string(path)?;
         let cfg: Config = toml::from_str(&text)?;
         Ok(Some(cfg))
     }
 
     /// Serialize and write the config to `%APPDATA%\jumpkey\config.toml`,
-    /// creating the directory if needed.
+    /// creating the directory if needed. See [`Self::save_to`].
     pub fn save(&self) -> anyhow::Result<()> {
         let path = Self::file_path()
             .ok_or_else(|| anyhow::anyhow!("APPDATA env var not set; cannot save config"))?;
+        self.save_to(&path)?;
+        tracing::info!(?path, "config saved");
+        Ok(())
+    }
+
+    /// Write the config to `path` atomically: write a sibling temp file,
+    /// then rename it over `path` (which replaces it on Windows), so the
+    /// hot-reload watcher never reads a half-written file. If the rename
+    /// fails (e.g. an editor holds the file open without delete sharing),
+    /// fall back to writing `path` directly rather than failing the save.
+    pub fn save_to(&self, path: &std::path::Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text)?;
-        tracing::info!(?path, "config saved");
+        // The watcher treats any `config.toml*` name as the config, so
+        // the temp file's own events only trigger the usual debounced
+        // reload, which then reads the finished file.
+        let mut tmp = path.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        std::fs::write(&tmp, &text)?;
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            tracing::warn!(error = ?e, "atomic config save failed; writing in place");
+            let _ = std::fs::remove_file(&tmp);
+            std::fs::write(path, &text)?;
+        }
         Ok(())
     }
 
@@ -484,5 +519,54 @@ mod tests {
         assert_eq!(cfg.hints.order, HintOrder::Cursor);
         let cfg: Config = toml::from_str("[hints]\norder = \"reading\"").unwrap();
         assert_eq!(cfg.hints.order, HintOrder::Reading);
+    }
+
+    /// A fresh, empty directory under the system temp dir, unique to
+    /// this test (process id + name), removed first if left over.
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("jumpkey-test-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn load_from_missing_file_is_none() {
+        let dir = scratch_dir("missing");
+        assert!(Config::load_from(&dir.join("config.toml"))
+            .unwrap()
+            .is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_from_bad_toml_is_err_naming_the_line() {
+        let dir = scratch_dir("bad");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[scope]\nmode = \"active_window\"\n[hints\n").unwrap();
+        let err = Config::load_from(&path).expect_err("malformed TOML must not load");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("line 3"), "error should name the line: {msg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_to_round_trips_and_leaves_no_temp_file() {
+        let dir = scratch_dir("save");
+        let path = dir.join("jumpkey").join("config.toml");
+        let mut cfg = Config::default();
+        cfg.hints.order = HintOrder::Reading;
+        cfg.save_to(&path).unwrap();
+        // Overwrite an existing file too (rename must replace it).
+        cfg.hints.order = HintOrder::Cursor;
+        cfg.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap().expect("file was saved");
+        assert_eq!(loaded, cfg);
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("config.toml")]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

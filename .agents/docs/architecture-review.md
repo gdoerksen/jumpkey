@@ -26,7 +26,7 @@ after a window switch (#20); desktop apps take 37–155 ms.
 
 | Step | Item | Why now | Depends on | Size |
 |---|---|---|---|---|
-| 1 | Small correctness fixes: reload safety (#8), warming-hook foreground filter (#10), the **quick fix** for the ID/cache bug (issue #22, weakness 6: tag IDs with the backend that made them) | Silent config resets, wasted searches, wrong clicks | — | S each |
+| 1 | **Done (2026-11-21).** Small correctness fixes: reload safety (#8), warming-hook foreground filter (#10, became "invalidate on move"), the **quick fix** for the ID/cache bug (issue #22, weakness 6: tag cache entries with the ID generation that made them) | Silent config resets, wasted searches, wrong clicks | — | S each |
 | 2 | **Faster browser walk** (#41): skip subtrees entirely outside the window, **together with the empty-first-press fix (#53)**, which lives in the same activation and walk code. Measured with pick-bench A/B against the baseline, and checked for the **same labels** per scenario, not just speed (sticky headers, fixed bars and children drawn outside their parent must survive) | The slowest part of today's features: 0.7–1.3 s per browser press against 37–155 ms for desktop apps | — | M |
 | 3 | **Hook spike** (#34, widened for #54): does a no-activate overlay + `WH_KEYBOARD_LL` keep menus open and swallow keys reliably? Does Chromium expose ScrollPattern on scroll containers, and how fast is the search for them? | One throwaway prototype answers the riskiest question for menus *and* scroll mode | — | S |
 | 4 | **Scroll mode v1** (#54) on the hook from step 3, as a self-contained mode the state machine absorbs later | User-visible feature; proves the hook, the off-thread worker pattern and a no-activate indicator window in daily use before the big refactor relies on them | 3 | M |
@@ -338,7 +338,7 @@ _Areas the first pass only skimmed. Ranked by impact._
 
 ## 8. Hot-reload can apply defaults over a working config (likely bug)
 
-> **Status (2026-11-21):** open. The reload path still calls `Config::load_or_default()` (`src/main.rs:413`); `save` still uses `std::fs::write`.
+> **Status (2026-11-21):** **done.** Reload uses `try_load`: a missing file still means defaults, but a file that doesn't parse keeps the current settings and shows a warning naming the line. At startup a broken file runs on defaults with the same warning (shown before any hotkey-conflict box, since it explains why the chords reverted) and is left untouched. `save` writes `config.toml.tmp` and renames it over the file, falling back to an in-place write if the rename fails. Known limit: saving from Settings while the file is broken overwrites the hand edits with the in-memory settings; the startup and reload warnings make that state visible.
 
 - `config_watcher` posts a reload 150 ms after a file change.
 - The main loop calls `Config::load_or_default()`, which returns **defaults**
