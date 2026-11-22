@@ -27,6 +27,7 @@ pub mod window_picker;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use parking_lot::Mutex;
@@ -54,7 +55,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
+    EnumChildWindows, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
     SendMessageTimeoutW, SetCursorPos, SMTO_ABORTIFHUNG, WM_GETOBJECT,
 };
 
@@ -164,6 +165,77 @@ struct WalkStats {
     max_depth: usize,
     hit_depth_cap: bool,
     hit_element_cap: bool,
+    /// Input: the window's rect, for judging whether an empty page
+    /// `Document` is on screen. `None` if UIA didn't report one.
+    window_rect: Option<Bounds>,
+    /// `Document` nodes seen (browser walks). A built Chromium window
+    /// has at least one: the page, and in Vivaldi the browser UI too.
+    documents: usize,
+    /// Page `Document`s with a real on-screen rect but no children: a
+    /// tab whose accessibility tree Chromium hasn't built yet (#53).
+    empty_documents: usize,
+}
+
+impl WalkStats {
+    /// Does a browser walk that `collected` this many elements look
+    /// like Chromium hadn't built the tree yet (#53)? Nothing found, an
+    /// on-screen page `Document` with no children, or, in a window that
+    /// hosts web content (a renderer child window), no `Document` at
+    /// all. Dialogs host none and never have a `Document`.
+    fn looks_unbuilt(&self, collected: usize, hosts_web_content: bool) -> bool {
+        collected == 0 || self.empty_documents > 0 || (hosts_web_content && self.documents == 0)
+    }
+}
+
+/// Wait before each retry of a browser walk that came back empty (#53).
+const EMPTY_WALK_RETRY_DELAY: Duration = Duration::from_millis(150);
+/// Retries after the first attempt, so at most ~300 ms of waiting.
+const EMPTY_WALK_MAX_RETRIES: u32 = 2;
+/// How long a window whose retries still found an empty page skips
+/// retrying, so a genuinely empty page (a blank tab, a canvas app)
+/// pays the wait once, not on every press.
+const EMPTY_WALK_SKIP_FOR: Duration = Duration::from_secs(30);
+
+/// Whether a browser walk should be retried, and after how long.
+///
+/// Chromium builds a tab's accessibility tree only after being asked
+/// (`activate_browser_accessibility`), and the walk runs right after
+/// asking. On a freshly opened page it can find nothing at all, and
+/// the user sees no overlay (#53). So retry while the walk
+/// [`WalkStats::looks_unbuilt`], up to [`EMPTY_WALK_MAX_RETRIES`]
+/// times, unless this window recently stayed unbuilt through its
+/// retries (`recently_empty`).
+fn walk_retry_delay(
+    retries_done: u32,
+    looks_unbuilt: bool,
+    recently_empty: bool,
+) -> Option<Duration> {
+    if looks_unbuilt && !recently_empty && retries_done < EMPTY_WALK_MAX_RETRIES {
+        Some(EMPTY_WALK_RETRY_DELAY)
+    } else {
+        None
+    }
+}
+
+/// Windows whose retries last found an empty page, and when. Shared by
+/// every backend (hotkey and cache warming) because it's about the
+/// window, not about whoever walked it.
+fn empty_walk_windows() -> &'static Mutex<HashMap<WindowKey, Instant>> {
+    static MAP: std::sync::OnceLock<Mutex<HashMap<WindowKey, Instant>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Was `key` empty through its retries less than `skip_for` before
+/// `now`? Forgets entries older than that.
+fn recently_empty(
+    map: &mut HashMap<WindowKey, Instant>,
+    key: WindowKey,
+    now: Instant,
+    skip_for: Duration,
+) -> bool {
+    map.retain(|_, at| now.saturating_duration_since(*at) < skip_for);
+    map.contains_key(&key)
 }
 
 /// One element captured by [`walk_window`] before any backend-side
@@ -621,8 +693,13 @@ impl WindowsBackend {
         )?;
         let elements = self.register_records(records);
 
-        let shared: Arc<[Element]> = Arc::from(elements.clone().into_boxed_slice());
-        self.cache.lock().insert(key, shared, self.generation);
+        // Never cache an empty result: it's usually a page Chromium
+        // hadn't built yet (#53), and caching it would serve "nothing"
+        // again on the next press.
+        if !elements.is_empty() {
+            let shared: Arc<[Element]> = Arc::from(elements.clone().into_boxed_slice());
+            self.cache.lock().insert(key, shared, self.generation);
+        }
         Ok(elements)
     }
 
@@ -654,9 +731,12 @@ impl WindowsBackend {
         )?;
         let elements = self.register_records(records);
         let count = elements.len();
-        self.cache
-            .lock()
-            .insert(key, Arc::from(elements.into_boxed_slice()), self.generation);
+        // Never cache an empty result (#53); see `enumerate_window`.
+        if count > 0 {
+            self.cache
+                .lock()
+                .insert(key, Arc::from(elements.into_boxed_slice()), self.generation);
+        }
         Ok(Some(count))
     }
 
@@ -1190,8 +1270,13 @@ impl Backend for WindowsBackend {
         // entirely. The cache holds an `Arc<[Element]>` so subsequent
         // cache hits are a single refcount bump even for a 2k-element
         // browser walk.
-        let shared: Arc<[Element]> = Arc::from(out.clone().into_boxed_slice());
-        self.cache.lock().insert(key, shared, self.generation);
+        //
+        // Never cache an empty result (#53): it's usually a page
+        // Chromium hadn't built yet, and the next press should walk.
+        if !out.is_empty() {
+            let shared: Arc<[Element]> = Arc::from(out.clone().into_boxed_slice());
+            self.cache.lock().insert(key, shared, self.generation);
+        }
 
         // Per-role breakdown helps when a user reports "jumpkey didn't see
         // button X in app Y" — the log shows whether the element was
@@ -1492,49 +1577,91 @@ pub(crate) fn walk_window(
         collected = tracing::field::Empty,
         max_depth = tracing::field::Empty,
         hit_depth_cap = tracing::field::Empty,
-        hit_element_cap = tracing::field::Empty
+        hit_element_cap = tracing::field::Empty,
+        attempts = tracing::field::Empty,
+        documents = tracing::field::Empty,
+        empty_documents = tracing::field::Empty
     )
     .entered();
     #[cfg(feature = "telemetry")]
     if let Some(exe) = window_exe_basename(hwnd) {
         tel_record!(walk, "process.executable.name", exe.as_str());
     }
-    if is_browser {
-        let _s = tel_span!("activate").entered();
-        activate_browser_accessibility(hwnd);
-    }
-    let handle = Handle::from(hwnd.0 as isize);
-    let root = {
-        let _s = tel_span!("root").entered();
-        automation
-            .element_from_handle_build_cache(handle, cache_request)
-            .context("element_from_handle_build_cache failed")?
+    let key = hwnd_to_key(hwnd);
+    let skip_retry = is_browser && {
+        let mut map = empty_walk_windows().lock();
+        recently_empty(&mut map, key, Instant::now(), EMPTY_WALK_SKIP_FOR)
     };
+    let handle = Handle::from(hwnd.0 as isize);
+    let mut retries: u32 = 0;
+    let (out, stats) = loop {
+        let hosts_web_content = is_browser && {
+            let _s = tel_span!("activate").entered();
+            activate_browser_accessibility(hwnd)
+        };
+        let root = {
+            let _s = tel_span!("root").entered();
+            automation
+                .element_from_handle_build_cache(handle, cache_request)
+                .context("element_from_handle_build_cache failed")?
+        };
 
-    let mut out = Vec::with_capacity(64);
-    let mut stats = WalkStats::default();
-    let search = tel_span!("search").entered();
-    if is_browser {
-        let walker = automation
-            .get_control_view_walker()
-            .context("creating control-view tree walker failed")?;
-        walk_recurse(&walker, cache_request, &root, 0, true, &mut out, &mut stats);
-    } else {
-        find_all_desktop(
-            automation,
-            cache_request,
-            desktop_condition,
-            &root,
-            &mut out,
-            &mut stats,
-        );
-    }
+        let mut out = Vec::with_capacity(64);
+        let mut stats = WalkStats {
+            window_rect: cached_bounds(&root),
+            ..WalkStats::default()
+        };
+        let search = tel_span!("search").entered();
+        if is_browser {
+            let walker = automation
+                .get_control_view_walker()
+                .context("creating control-view tree walker failed")?;
+            walk_recurse(&walker, cache_request, &root, 0, true, &mut out, &mut stats);
+        } else {
+            find_all_desktop(
+                automation,
+                cache_request,
+                desktop_condition,
+                &root,
+                &mut out,
+                &mut stats,
+            );
+        }
+        drop(search);
+        if !is_browser {
+            break (out, stats);
+        }
+        let unbuilt = stats.looks_unbuilt(out.len(), hosts_web_content);
+        match walk_retry_delay(retries, unbuilt, skip_retry) {
+            Some(delay) => {
+                tracing::debug!(
+                    collected = out.len(),
+                    documents = stats.documents,
+                    empty_documents = stats.empty_documents,
+                    retries,
+                    "browser page looks unbuilt; retrying the walk"
+                );
+                std::thread::sleep(delay);
+                retries += 1;
+            }
+            None => {
+                let mut map = empty_walk_windows().lock();
+                if !unbuilt {
+                    map.remove(&key);
+                } else if retries > 0 {
+                    // Still unbuilt after retrying: likely a genuinely
+                    // empty page. Don't make every press wait again.
+                    map.insert(key, Instant::now());
+                }
+                break (out, stats);
+            }
+        }
+    };
     // Post-walk dedup: collapse nested clickables so the overlay only
     // surfaces the most-specific target per visual region. UIA loves to
     // expose both an outer ListItem/Group and the inner Button/Hyperlink
     // it wraps; without this pass the user sees stacked badges fighting
     // for the same screen real estate.
-    drop(search);
     let pre_dedup = out.len();
     let out = {
         let _s = tel_span!("dedup").entered();
@@ -1547,6 +1674,9 @@ pub(crate) fn walk_window(
     tel_record!(walk, "max_depth", stats.max_depth as u64);
     tel_record!(walk, "hit_depth_cap", stats.hit_depth_cap);
     tel_record!(walk, "hit_element_cap", stats.hit_element_cap);
+    tel_record!(walk, "attempts", u64::from(retries) + 1);
+    tel_record!(walk, "documents", stats.documents as u64);
+    tel_record!(walk, "empty_documents", stats.empty_documents as u64);
     if tracing::enabled!(tracing::Level::DEBUG) {
         tracing::debug!(
             collected = post_dedup,
@@ -1555,6 +1685,9 @@ pub(crate) fn walk_window(
             max_depth = stats.max_depth,
             hit_depth_cap = stats.hit_depth_cap,
             hit_element_cap = stats.hit_element_cap,
+            attempts = retries + 1,
+            documents = stats.documents,
+            empty_documents = stats.empty_documents,
             ?hwnd,
             is_browser,
             "walk_window done"
@@ -1563,12 +1696,7 @@ pub(crate) fn walk_window(
     #[cfg(feature = "telemetry")]
     {
         let exe = window_exe_basename(hwnd);
-        let window = root.get_cached_bounding_rectangle().ok().map(|r| Bounds {
-            x: r.get_left(),
-            y: r.get_top(),
-            width: r.get_width(),
-            height: r.get_height(),
-        });
+        let window = stats.window_rect;
         let elements: Vec<(Role, Bounds)> = out.iter().map(|r| (r.role, r.bounds)).collect();
         walk_dump::record(&walk_dump::WalkSummary {
             exe: exe.as_deref(),
@@ -1612,6 +1740,11 @@ fn walk_recurse(
     if let Some(record) = try_record(el, is_browser) {
         out.push(record);
     }
+    let is_document =
+        is_browser && el.get_cached_control_type().ok() == Some(ControlType::Document);
+    if is_document {
+        stats.documents += 1;
+    }
     if depth >= max_depth {
         stats.hit_depth_cap = true;
         return;
@@ -1640,7 +1773,31 @@ fn walk_recurse(
                 Err(_) => break,
             }
         }
+    } else if is_document && is_on_screen(cached_bounds(el), stats.window_rect) {
+        stats.empty_documents += 1;
     }
+}
+
+/// A rect with a real size inside the window. Used for childless page
+/// `Document`s: an on-screen one is a tab Chromium hasn't built yet
+/// (#53); off-screen or zero-size ones (hidden panels, background tabs)
+/// don't count.
+fn is_on_screen(rect: Option<Bounds>, window: Option<Bounds>) -> bool {
+    let Some(rect) = rect else {
+        return false;
+    };
+    rect.width > 0 && rect.height > 0 && window.map_or(true, |w| w.intersects(&rect))
+}
+
+/// A node's cached bounding rectangle as [`Bounds`].
+fn cached_bounds(el: &UIElement) -> Option<Bounds> {
+    let r = el.get_cached_bounding_rectangle().ok()?;
+    Some(Bounds {
+        x: r.get_left(),
+        y: r.get_top(),
+        width: r.get_width(),
+        height: r.get_height(),
+    })
 }
 
 /// Phase-2 desktop walker: hand the whole subtree filter to UIA via
@@ -2147,20 +2304,43 @@ const ACCESSIBILITY_ACTIVATION_TIMEOUT_MS: u32 = 50;
 /// and IE classic respond to that path, while modern Chromium prefers
 /// the UIA root id. The message is fire-and-forget; we ignore the
 /// returned IAccessible pointer.
-fn activate_browser_accessibility(hwnd: HWND) {
+///
+/// Returns whether the window hosts web content, i.e. has at least one
+/// `Chrome_RenderWidgetHostHWND` child. Browser dialogs (Vivaldi's own
+/// prompts, the Save As box) don't, and never contain a `Document`, so
+/// the "no `Document` yet" retry rule (#53) only applies when this is
+/// true.
+fn activate_browser_accessibility(hwnd: HWND) -> bool {
+    let mut renderers: usize = 0;
     unsafe {
         send_accessibility_probe(hwnd);
         // Walk the child HWNDs too — each renderer process surfaces
         // the page document via its own child window.
-        let _ = EnumChildWindows(hwnd, Some(activation_enum_proc), LPARAM(0));
+        let _ = EnumChildWindows(
+            hwnd,
+            Some(activation_enum_proc),
+            LPARAM(&mut renderers as *mut usize as isize),
+        );
     }
+    renderers > 0
 }
+
+/// Window class of a Chromium renderer's child window.
+const CHROME_RENDERER_CLASS: &str = "Chrome_RenderWidgetHostHWND";
 
 unsafe extern "system" fn activation_enum_proc(
     hwnd: HWND,
-    _lparam: LPARAM,
+    lparam: LPARAM,
 ) -> windows::Win32::Foundation::BOOL {
     send_accessibility_probe(hwnd);
+    let mut buf = [0u16; 64];
+    let len = GetClassNameW(hwnd, &mut buf);
+    if len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == CHROME_RENDERER_CLASS {
+        // SAFETY: `lparam` is the `&mut usize` passed by
+        // `activate_browser_accessibility`, alive for the whole
+        // synchronous `EnumChildWindows` call.
+        *(lparam.0 as *mut usize) += 1;
+    }
     windows::Win32::Foundation::BOOL(1)
 }
 
@@ -2183,6 +2363,94 @@ unsafe fn send_accessibility_probe(hwnd: HWND) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- empty first press (#53) ---------------------------------------
+
+    fn stats(documents: usize, empty_documents: usize) -> WalkStats {
+        WalkStats {
+            documents,
+            empty_documents,
+            ..WalkStats::default()
+        }
+    }
+
+    #[test]
+    fn a_walk_that_found_nothing_looks_unbuilt() {
+        assert!(stats(2, 0).looks_unbuilt(0, true));
+        assert!(stats(0, 0).looks_unbuilt(0, false));
+    }
+
+    #[test]
+    fn a_web_window_without_any_document_looks_unbuilt() {
+        assert!(stats(0, 0).looks_unbuilt(3, true));
+    }
+
+    #[test]
+    fn a_browser_dialog_without_a_document_is_fine() {
+        // Seen live: a Vivaldi prompt (checkbox + two buttons) has no
+        // renderer child and no Document; it must not be retried.
+        assert!(!stats(0, 0).looks_unbuilt(3, false));
+    }
+
+    #[test]
+    fn an_empty_page_document_looks_unbuilt_even_with_chrome_labels() {
+        // Browser UI (tabs, address bar) found, but the page isn't built.
+        assert!(stats(2, 1).looks_unbuilt(12, true));
+    }
+
+    #[test]
+    fn a_built_page_does_not_look_unbuilt() {
+        assert!(!stats(2, 0).looks_unbuilt(40, true));
+    }
+
+    #[test]
+    fn retries_an_unbuilt_walk() {
+        assert_eq!(
+            walk_retry_delay(0, true, false),
+            Some(EMPTY_WALK_RETRY_DELAY)
+        );
+        assert_eq!(walk_retry_delay(0, false, false), None);
+    }
+
+    #[test]
+    fn stops_after_the_last_retry() {
+        assert!(walk_retry_delay(EMPTY_WALK_MAX_RETRIES - 1, true, false).is_some());
+        assert_eq!(walk_retry_delay(EMPTY_WALK_MAX_RETRIES, true, false), None);
+    }
+
+    #[test]
+    fn skips_retrying_a_window_that_recently_stayed_unbuilt() {
+        assert_eq!(walk_retry_delay(0, true, true), None);
+    }
+
+    #[test]
+    fn only_real_rects_inside_the_window_are_on_screen() {
+        let window = Some(bnd(0, 0, 1600, 1000));
+        assert!(is_on_screen(Some(bnd(10, 80, 1580, 900)), window));
+        assert!(!is_on_screen(Some(bnd(10, 80, 0, 900)), window));
+        assert!(!is_on_screen(Some(bnd(2000, 80, 400, 400)), window));
+        assert!(!is_on_screen(None, window));
+        assert!(is_on_screen(Some(bnd(10, 80, 100, 100)), None));
+    }
+
+    #[test]
+    fn recently_empty_windows_expire() {
+        let key = hwnd_to_key(hwnd(7));
+        let other = hwnd_to_key(hwnd(8));
+        let t0 = Instant::now();
+        let skip = Duration::from_secs(30);
+        let mut map = HashMap::new();
+        map.insert(key, t0);
+        assert!(recently_empty(
+            &mut map,
+            key,
+            t0 + Duration::from_secs(29),
+            skip
+        ));
+        assert!(!recently_empty(&mut map, other, t0, skip));
+        assert!(!recently_empty(&mut map, key, t0 + skip, skip));
+        assert!(map.is_empty(), "expired entries are forgotten");
+    }
 
     // ---- plan_windows -------------------------------------------------
 

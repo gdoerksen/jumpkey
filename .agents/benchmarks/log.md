@@ -14,6 +14,25 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 
 ---
 
+## 2026-11-21: empty first press fix (#53, roadmap step 2 PR 2)
+
+Branch `fix/browser-empty-first-press` vs main `6168e3c`, telemetry
+release builds.
+
+- **A/B** (`pr53-ab`): the 6 Vivaldi scenarios × `switch-then-press:2000`
+  and `repeat-press:300`, 10 presses per build. p50 changes from −16.5 to
+  +24.8 ms (−2.7 % to +3.3 %; tabs `repeat-press` +6 ms on a 28 ms cache
+  hit), i.e. noise. The branch's 108 hotkey walks all took 1 attempt.
+- **Fresh page** (`fp-<build>-<scenario>-<n>`): each build alone, each
+  scenario 3 times, so every run's first press hits a just-opened
+  window. Main: no overlay on the first press in 2/18 (long-feed,
+  nested-menu), plus 1/6 in the A/B run (dense-list). Branch: 0/18; it
+  retried 3 first presses (tabs, dense-list, form), each succeeding on
+  the second attempt with the full element count, at 0.7–1.3 s for the
+  walk.
+
+---
+
 ## 2026-11-21: baseline before the refactor (`154236-baseline`)
 
 **The reference for comparing refactors.** Raw records:

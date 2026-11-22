@@ -1967,6 +1967,8 @@ most for launch at login, when every other app is starting too.
 
 ## 53. The first press on a freshly opened Chromium page can show nothing
 
+> **Status (2026-11-21):** **done** (roadmap step 2, PR 2). `walk_window` retries a browser walk that `WalkStats::looks_unbuilt` (nothing collected; an on-screen page `Document` with no children; or no `Document` at all in a window with a `Chrome_RenderWidgetHostHWND` child; browser dialogs have neither and aren't retried) after 150 ms, up to twice. A window still unbuilt after its retries is skipped for 30 s (a static map shared by the hotkey and warming backends). Empty results are never cached. Measured: fresh-page first presses showed nothing in 3/24 runs on main, 0/18 on the branch (3 retries, each finding the full page); hotkey walks on built pages never retried (0/108); no p50 change beyond noise on any Vivaldi scenario. Telemetry: `attempts`, `documents`, `empty_documents` on the `walk` span.
+
 Worse than #41's guess of a "sparse first press": on a just-opened Vivaldi
 page jumpkey sometimes finds **no** elements, logs "no interactable
 elements" and shows no overlay at all, so the user sees nothing happen.
