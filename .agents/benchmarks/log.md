@@ -20,7 +20,13 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 machine. Findings and the menu matrix: architecture review #34.
 
 **Hook latency** (`SendInput` → `WH_KEYBOARD_LL` callback, 100 tagged
-events, 3 runs): p50 99–108 µs, p95 235–241 µs, max 381–522 µs.
+events, 3 runs): p50 99–108 µs, p95 235–241 µs, max 381–522 µs. A
+fourth run, started right after a build, showed p50 66 µs but p95 4.3 ms
+and one event at 328 ms. That is delivery delay on a busy machine, not
+time in the callback, and no key leaked.
+
+**60 s idle wait** (`menus-wait 60`): all 9 menus still open, the overlay
+still above them, and the hook still swallowing keys afterwards.
 
 **Hook stalls** (`LowLevelHooksTimeout` not set):
 

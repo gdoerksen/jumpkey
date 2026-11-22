@@ -1473,6 +1473,21 @@ couldn't be measured that way. Esc, the stronger test, didn't leak.
    - Untagged injected input is told apart and passed through.
    - Right Alt on the US layout arrives as plain Alt, with no fake Ctrl.
      AltGr layouts are untested.
+9. **A long pause between picks is fine** (`menus-wait 60`). Each of the
+   9 menus was opened, then the overlay and hook sat over it for 60 s
+   with nothing happening, the menu polled once a second.
+   - Every menu was still open after 60 s.
+   - The foreground never changed.
+   - The overlay was still above the menu wherever the menu has a
+     window.
+   - After the wait, the hook still saw and swallowed keys, Esc didn't
+     leak, and a sentinel key arrived.
+
+   That fits how the timeout works: it only applies while the hook is
+   handling a key, so an idle hook costs nothing. In daily use a long
+   pause raises other risks: something else taking focus, the user
+   forgetting the mode is on, and a modifier released on the lock screen.
+   See scroll mode's Risks (#54).
 
 ## 35. Experiments need a home in the config and the architecture
 
@@ -2182,7 +2197,12 @@ the home row in Dvorak and Colemak, like Homerow.
   whose callback only maps the event (`key_from_ll` into a
   `KeyTracker`, giving a `jumpkey::input::KeyEvent`) and posts it to the
   main loop (spike #34: a callback slower than ~320 ms loses keys).
-  - It ignores injected events and swallows bound keys and their key-ups.
+  - It ignores **only jumpkey's own** injected events (tagged through
+    `dwExtraInfo`, as the spike does) and treats other injected input as
+    real. Keys remapped by PowerToys Keyboard Manager or AutoHotkey
+    arrive injected: ignoring all injected input would pass a remapped
+    Esc straight through to the app. It swallows bound keys and their
+    key-ups.
   - **jumpkey's own chords** (the scroll and pick hotkeys) are matched in
     the hook and swallowed whole. Passing them through to
     `RegisterHotKey` closes Win32 and Chromium menus.
@@ -2254,7 +2274,24 @@ bindings, elevated windows (UIPI blocks the wheel input, #29).
   app. The hook wasn't removed, even after 20 timeouts in a row on build
   26300, but the dedicated hook thread makes stalls impossible anyway. UIA
   calls still go to workers.
-- **Stuck keys.** Track key-ups; clear the velocity on every exit.
+- **Stuck keys.** Track key-ups; clear the velocity and reset the
+  `KeyTracker` on every exit.
+- **Keys the hook never sees.** The lock screen, Ctrl+Alt+Del and UAC
+  prompts run on a secure desktop that low-level hooks don't see. If a
+  modifier is released there, `KeyTracker` still thinks it's held and
+  chord matching goes wrong. Reset the tracker on session lock and
+  desktop switch (`WTSRegisterSessionNotification`). Possibly also
+  re-read the real modifier state with `GetAsyncKeyState` when a mode
+  starts.
+- **Other hooks.** The hook installed last sees keys first. PowerToys
+  and AutoHotkey run their own low-level hooks. Installing jumpkey's
+  hook fresh for each mode session keeps it first for that session.
+- **Elevated windows.** A non-elevated jumpkey probably neither sees keys
+  typed into an administrator window nor acts on it (#29). Untested.
+- **The user forgets the mode is on.** While the mode is active, its
+  bound keys are swallowed system-wide. Exiting on any unbound key (and
+  passing it through) limits the damage. A clear indicator, and maybe an
+  idle timeout, are design choices for step 5.
 
 ### How scroll mode fits the architecture
 
