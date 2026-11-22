@@ -1,9 +1,13 @@
 //! Background pre-warming of the per-HWND UIA element cache.
 //!
-//! Phase 4 of the snappy-perf plan. The synchronous hotkey path
-//! ([`crate::Backend::enumerate_foreground`]) becomes a cache lookup
-//! whenever this module has had a chance to walk the foreground
-//! window's UIA tree first. Two ingredients make that possible:
+//! Phase 4 of the snappy-perf plan. The idea was that the synchronous
+//! hotkey path ([`crate::Backend::enumerate_foreground`]) becomes a
+//! cache lookup whenever this module has walked the foreground window
+//! first. **It can't today:** cached elements carry IDs that only this
+//! worker's backend can act on, so the hotkey path rejects entries
+//! from another ID generation ([`crate::cache::Generation`], issue #22)
+//! and walks again. Making these walks reusable needs a shared UIA
+//! cache (roadmap step 6). The pieces:
 //!
 //! 1. A dedicated MTA worker thread that owns its own
 //!    [`crate::windows::WindowsBackend`] (separate `UIAutomation`
@@ -216,14 +220,17 @@ fn worker_loop(
         }
         let hwnd = HWND(raw as *mut std::ffi::c_void);
         let started = Instant::now();
-        match backend.enumerate_window(hwnd) {
-            Ok(elements) => {
+        match backend.warm_window(hwnd) {
+            Ok(Some(count)) => {
                 tracing::debug!(
                     hwnd = ?hwnd.0,
-                    count = elements.len(),
+                    count,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "prewarm walked window"
                 );
+            }
+            Ok(None) => {
+                tracing::debug!(hwnd = ?hwnd.0, "prewarm skipped: already cached");
             }
             Err(e) => {
                 tracing::debug!(hwnd = ?hwnd.0, error = ?e, "prewarm walk failed");

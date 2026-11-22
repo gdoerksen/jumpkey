@@ -56,7 +56,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageTimeoutW, SetCursorPos, SMTO_ABORTIFHUNG, WM_GETOBJECT,
 };
 
-use crate::cache::{CacheManager, WindowKey};
+use crate::cache::{CacheManager, Generation, Lookup, WindowKey};
 use crate::config::ScopeMode;
 use crate::layout_order::{union_center, HintOrder};
 use crate::{tel_current, tel_record, tel_record_current, tel_span};
@@ -203,6 +203,12 @@ pub struct WindowsBackend {
     automation: UIAutomation,
     elements: HashMap<ElementId, UIElement>,
     next_id: u64,
+    /// ID generation of `elements`: renewed whenever the table is
+    /// cleared and `next_id` reset, and stored with every cache entry
+    /// this backend inserts. A cache hit is only usable when its
+    /// generation matches, because cached `Element`s carry IDs that
+    /// only mean something to the table that minted them (issue #22).
+    generation: Generation,
     /// Per-HWND enumeration cache. Backs the "press Esc, retry"
     /// flow — same window, same elements, no UIA round-trip. Disabled
     /// by setting `enable_caching = false` in `config.toml`.
@@ -288,6 +294,7 @@ impl WindowsBackend {
             automation,
             elements: HashMap::new(),
             next_id: 0,
+            generation: Generation::next(),
             cache,
             max_elements_global,
             cache_request,
@@ -593,17 +600,14 @@ impl WindowsBackend {
     /// multi-window scope modes and by the foreground path.
     pub fn enumerate_window(&mut self, hwnd: HWND) -> anyhow::Result<Vec<Element>> {
         let key = hwnd_to_key(hwnd);
-        if let Some(cached) = self.cache.lock().get(key) {
-            let all_known = cached.iter().all(|e| self.elements.contains_key(&e.id));
-            if all_known {
-                return Ok(cached.as_ref().to_vec());
-            }
-            // Cache hit but the IDs were minted by a different
-            // backend (the pre-warm worker, or a different per-pid
-            // worker). Fall through to a fresh walk so
-            // `self.elements` has UIElement handles bound to *this*
-            // backend for `perform()` to use.
+        let lookup = self.cache.lock().lookup(key, self.generation);
+        if let Lookup::Hit(cached) = lookup {
+            return Ok(cached.as_ref().to_vec());
         }
+        // Otherwise (no entry, or IDs from another generation: the
+        // pre-warm worker's backend, or before this backend's last
+        // reset) walk fresh, so `self.elements` holds UIElement
+        // handles for exactly these IDs when `perform()` runs.
 
         let is_browser = is_browser_window(hwnd);
         let records = walk_window(
@@ -616,8 +620,42 @@ impl WindowsBackend {
         let elements = self.register_records(records);
 
         let shared: Arc<[Element]> = Arc::from(elements.clone().into_boxed_slice());
-        self.cache.lock().insert(key, shared);
+        self.cache.lock().insert(key, shared, self.generation);
         Ok(elements)
+    }
+
+    /// Cache-warming walk of one HWND, for the pre-warm worker's
+    /// backend. Returns `Ok(None)` without walking when the window
+    /// already has a fresh entry from *any* backend: replacing the
+    /// hotkey path's own entry with ours would turn its usable hit
+    /// ("Esc, retry") into a miss, because our IDs aren't valid there.
+    ///
+    /// This backend never performs actions, so each walk starts a new
+    /// ID table instead of growing one forever (each entry pins a UIA
+    /// element).
+    pub fn warm_window(&mut self, hwnd: HWND) -> anyhow::Result<Option<usize>> {
+        let key = hwnd_to_key(hwnd);
+        if self.cache.lock().has_fresh(key) {
+            return Ok(None);
+        }
+        self.elements.clear();
+        self.next_id = 0;
+        self.generation = Generation::next();
+
+        let is_browser = is_browser_window(hwnd);
+        let records = walk_window(
+            &self.automation,
+            &self.cache_request,
+            &self.desktop_condition,
+            hwnd,
+            is_browser,
+        )?;
+        let elements = self.register_records(records);
+        let count = elements.len();
+        self.cache
+            .lock()
+            .insert(key, Arc::from(elements.into_boxed_slice()), self.generation);
+        Ok(Some(count))
     }
 
     /// Drain a batch of [`WalkRecord`]s into `self.elements`,
@@ -1093,15 +1131,17 @@ impl Backend for WindowsBackend {
         // again on the same HWND inside the TTL — either the
         // "user pressed Esc, retrying" path or, with Phase 4 in
         // place, the pre-warm worker beating the user to the walk
-        // after a foreground change. We only honor a hit when this
-        // backend already owns UIElement handles for every cached ID;
-        // otherwise [`Self::perform`] would fail with "unknown element
-        // id" when the user picks.
+        // after a foreground change. We only honor a hit from this
+        // backend's current ID generation: an entry from another
+        // backend, or from before our last reset, has ID numbers that
+        // may exist in `self.elements` but name different UIA
+        // elements, so picking would act on the wrong control
+        // (issue #22).
         let key = hwnd_to_key(hwnd);
         tel_record_current!("cache", "miss");
-        if let Some(cached) = self.cache.lock().get(key) {
-            let all_known = cached.iter().all(|e| self.elements.contains_key(&e.id));
-            if all_known {
+        let lookup = self.cache.lock().lookup(key, self.generation);
+        match lookup {
+            Lookup::Hit(cached) => {
                 tel_record_current!("cache", "hit");
                 tracing::debug!(
                     cached = cached.len(),
@@ -1109,18 +1149,24 @@ impl Backend for WindowsBackend {
                 );
                 return Ok(cached.as_ref().to_vec());
             }
-            tel_record_current!("cache", "hit_rejected");
-            tracing::debug!(
-                cached = cached.len(),
-                "cache hit but IDs not registered locally; rewalking to bind UIElements"
-            );
+            Lookup::OtherGeneration => {
+                tel_record_current!("cache", "hit_rejected");
+                tracing::debug!(
+                    "cache entry from another ID generation; rewalking to bind UIElements"
+                );
+            }
+            Lookup::Miss => {}
         }
 
         // Reset the local UIElement registry on a real miss; we hand
         // out fresh IDs starting from zero so old badges from the
-        // previous walk can't be invoked by mistake.
+        // previous walk can't be invoked by mistake. Starting a new
+        // generation makes every cache entry minted against the old
+        // table unusable to us, since its ID numbers are about to be
+        // reused.
         self.elements.clear();
         self.next_id = 0;
+        self.generation = Generation::next();
 
         let records = match walk_window(
             &self.automation,
@@ -1143,7 +1189,7 @@ impl Backend for WindowsBackend {
         // cache hits are a single refcount bump even for a 2k-element
         // browser walk.
         let shared: Arc<[Element]> = Arc::from(out.clone().into_boxed_slice());
-        self.cache.lock().insert(key, shared);
+        self.cache.lock().insert(key, shared, self.generation);
 
         // Per-role breakdown helps when a user reports "jumpkey didn't see
         // button X in app Y" — the log shows whether the element was
