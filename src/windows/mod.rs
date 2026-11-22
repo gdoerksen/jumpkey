@@ -174,6 +174,8 @@ struct WalkStats {
     /// Page `Document`s with a real on-screen rect but no children: a
     /// tab whose accessibility tree Chromium hasn't built yet (#53).
     empty_documents: usize,
+    /// SPIKE: subtrees skipped by the prune walk.
+    pruned: usize,
 }
 
 impl WalkStats {
@@ -1616,7 +1618,19 @@ pub(crate) fn walk_window(
             let walker = automation
                 .get_control_view_walker()
                 .context("creating control-view tree walker failed")?;
-            walk_recurse(&walker, cache_request, &root, 0, true, &mut out, &mut stats);
+            match spike::mode() {
+                spike::Mode::Current => {
+                    walk_recurse(&walker, cache_request, &root, 0, true, &mut out, &mut stats)
+                }
+                spike::Mode::Prune => {
+                    spike::walk_prune(&walker, cache_request, &root, 0, None, &mut out, &mut stats)
+                }
+                spike::Mode::Subtree => {
+                    if let Err(e) = spike::walk_subtree(automation, handle, &mut out, &mut stats) {
+                        tracing::warn!(error = ?e, "spike subtree walk failed");
+                    }
+                }
+            }
         } else {
             find_all_desktop(
                 automation,
@@ -1688,6 +1702,7 @@ pub(crate) fn walk_window(
             attempts = retries + 1,
             documents = stats.documents,
             empty_documents = stats.empty_documents,
+            pruned = stats.pruned,
             ?hwnd,
             is_browser,
             "walk_window done"
@@ -1787,6 +1802,186 @@ fn is_on_screen(rect: Option<Bounds>, window: Option<Bounds>) -> bool {
         return false;
     };
     rect.width > 0 && rect.height > 0 && window.map_or(true, |w| w.intersects(&rect))
+}
+
+/// SPIKE (roadmap step 2, never merged): alternative browser walks,
+/// selected by `JUMPKEY_WALK_MODE` or by the exe name containing
+/// `prune` / `subtree` (so pick-bench can A/B two copies of one build).
+mod spike {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Mode {
+        Current,
+        Prune,
+        Subtree,
+    }
+
+    pub fn mode() -> Mode {
+        static MODE: std::sync::OnceLock<Mode> = std::sync::OnceLock::new();
+        *MODE.get_or_init(|| {
+            let from_env = std::env::var("JUMPKEY_WALK_MODE").unwrap_or_default();
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_lowercase()))
+                .unwrap_or_default();
+            let pick = |s: &str| {
+                if s.contains("subtree") {
+                    Some(Mode::Subtree)
+                } else if s.contains("prune") {
+                    Some(Mode::Prune)
+                } else if s.contains("current") {
+                    Some(Mode::Current)
+                } else {
+                    None
+                }
+            };
+            let m = pick(&from_env).or(pick(&exe)).unwrap_or(Mode::Current);
+            tracing::info!(?m, "spike walk mode");
+            m
+        })
+    }
+
+    fn intersect(a: Bounds, b: Bounds) -> Bounds {
+        let x0 = a.x.max(b.x);
+        let y0 = a.y.max(b.y);
+        let x1 = (a.x + a.width).min(b.x + b.width);
+        let y1 = (a.y + a.height).min(b.y + b.height);
+        Bounds {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0),
+            height: (y1 - y0).max(0),
+        }
+    }
+
+    fn non_empty(b: &Bounds) -> bool {
+        b.width > 0 && b.height > 0
+    }
+
+    /// Skip a node's children only when its rect is real, lies wholly
+    /// outside the viewport, and UIA says it's off-screen.
+    pub fn skip_children(rect: Option<Bounds>, viewport: Option<Bounds>, offscreen: bool) -> bool {
+        match (rect, viewport) {
+            (Some(r), Some(v)) => offscreen && non_empty(&r) && !v.intersects(&r),
+            _ => false,
+        }
+    }
+
+    /// `walk_recurse` with conservative pruning below the first page
+    /// `Document`. `viewport` is `None` above it (browser chrome is
+    /// never pruned); below it, the window ∩ every `Document` and
+    /// scrollable ancestor's rect.
+    pub fn walk_prune(
+        walker: &UITreeWalker,
+        cache_request: &UICacheRequest,
+        el: &UIElement,
+        depth: usize,
+        viewport: Option<Bounds>,
+        out: &mut Vec<WalkRecord>,
+        stats: &mut WalkStats,
+    ) {
+        stats.visited += 1;
+        stats.max_depth = stats.max_depth.max(depth);
+        if out.len() >= MAX_ELEMENTS_BROWSER {
+            stats.hit_element_cap = true;
+            return;
+        }
+        if let Some(record) = try_record(el, true) {
+            out.push(record);
+        }
+        let is_document = el.get_cached_control_type().ok() == Some(ControlType::Document);
+        if is_document {
+            stats.documents += 1;
+        }
+        if depth >= MAX_TREE_DEPTH_BROWSER {
+            stats.hit_depth_cap = true;
+            return;
+        }
+        let rect = cached_bounds(el);
+        let offscreen = cached_bool(el, UIProperty::IsOffscreen).unwrap_or(false);
+        if skip_children(rect, viewport, offscreen) {
+            stats.pruned += 1;
+            return;
+        }
+        let mut child_vp = viewport;
+        let scrolls = el.get_cached_pattern::<UIScrollPattern>().is_ok();
+        if is_document || (viewport.is_some() && scrolls) {
+            if let Some(r) = rect.filter(non_empty) {
+                let base = viewport.or(stats.window_rect).unwrap_or(r);
+                child_vp = Some(intersect(base, r));
+            }
+        }
+        if let Ok(first) = walker.get_first_child_build_cache(el, cache_request) {
+            let mut current = first;
+            loop {
+                walk_prune(
+                    walker,
+                    cache_request,
+                    &current,
+                    depth + 1,
+                    child_vp,
+                    out,
+                    stats,
+                );
+                match walker.get_next_sibling_build_cache(&current, cache_request) {
+                    Ok(next) => current = next,
+                    Err(_) => break,
+                }
+            }
+        } else if is_document && is_on_screen(rect, stats.window_rect) {
+            stats.empty_documents += 1;
+        }
+    }
+
+    /// One UIA call that caches the whole control-view subtree, then a
+    /// walk over the cached children in memory.
+    pub fn walk_subtree(
+        automation: &UIAutomation,
+        handle: Handle,
+        out: &mut Vec<WalkRecord>,
+        stats: &mut WalkStats,
+    ) -> anyhow::Result<()> {
+        let req = build_cache_request(automation)?;
+        req.set_tree_scope(uiautomation::types::TreeScope::Subtree)?;
+        req.set_tree_filter(automation.get_control_view_condition()?)?;
+        let root = automation.element_from_handle_build_cache(handle, &req)?;
+        recurse_cached(&root, 0, out, stats);
+        Ok(())
+    }
+
+    fn recurse_cached(
+        el: &UIElement,
+        depth: usize,
+        out: &mut Vec<WalkRecord>,
+        stats: &mut WalkStats,
+    ) {
+        stats.visited += 1;
+        stats.max_depth = stats.max_depth.max(depth);
+        if out.len() >= MAX_ELEMENTS_BROWSER {
+            stats.hit_element_cap = true;
+            return;
+        }
+        if let Some(record) = try_record(el, true) {
+            out.push(record);
+        }
+        let is_document = el.get_cached_control_type().ok() == Some(ControlType::Document);
+        if is_document {
+            stats.documents += 1;
+        }
+        if depth >= MAX_TREE_DEPTH_BROWSER {
+            stats.hit_depth_cap = true;
+            return;
+        }
+        let children = el.get_cached_children().unwrap_or_default();
+        if children.is_empty() && is_document && is_on_screen(cached_bounds(el), stats.window_rect)
+        {
+            stats.empty_documents += 1;
+        }
+        for c in &children {
+            recurse_cached(c, depth + 1, out, stats);
+        }
+    }
 }
 
 /// A node's cached bounding rectangle as [`Bounds`].
