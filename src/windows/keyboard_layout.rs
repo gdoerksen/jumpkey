@@ -28,7 +28,8 @@ use windows::Win32::Graphics::Gdi::{
     GGI_MARK_NONEXISTING_GLYPHS,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, HKL, MAPVK_VK_TO_VSC_EX, MAPVK_VSC_TO_VK_EX,
+    GetAsyncKeyState, GetKeyboardLayout, MapVirtualKeyExW, ToUnicodeEx, HKL, MAPVK_VK_TO_VSC_EX,
+    MAPVK_VSC_TO_VK_EX,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowThreadProcessId, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLKHF_UP,
@@ -158,6 +159,57 @@ pub fn key_from_scancode(sc: u32, extended: bool) -> Key {
     } else {
         sc as u16
     })
+}
+
+/// The set-1 scan code and `E0` flag for a [`Key`]: the inverse of
+/// [`key_from_scancode`]. `None` for keys it can't name (numpad Enter is
+/// reported as the main Enter).
+pub fn scancode_for_key(key: Key) -> Option<(u32, bool)> {
+    use NamedKey::*;
+    match key {
+        Key::Phys(p) => SCANCODES
+            .iter()
+            .find(|(_, k)| *k == p)
+            .map(|(s, _)| (*s, false)),
+        Key::Other(code) => Some(((code & 0xFF) as u32, code & 0xE000 == 0xE000)),
+        Key::Named(n) => Some(match n {
+            Esc => (0x01, false),
+            Tab => (0x0F, false),
+            Enter => (0x1C, false),
+            Backspace => (0x0E, false),
+            Space => (0x39, false),
+            Up => (0x48, true),
+            Down => (0x50, true),
+            Left => (0x4B, true),
+            Right => (0x4D, true),
+            Home => (0x47, true),
+            End => (0x4F, true),
+            PageUp => (0x49, true),
+            PageDown => (0x51, true),
+            Delete => (0x53, true),
+            Shift => (0x2A, false),
+            Ctrl => (0x1D, false),
+            Alt => (0x38, false),
+            Meta => (0x5B, true),
+            F(n @ 1..=10) => (0x3B + n as u32 - 1, false),
+            F(11) => (0x57, false),
+            F(12) => (0x58, false),
+            F(n @ 13..=23) => (0x64 + n as u32 - 13, false),
+            F(24) => (0x76, false),
+            F(_) => return None,
+        }),
+    }
+}
+
+/// True if `key` is physically down right now (`GetAsyncKeyState`), via
+/// its scan code and the captured layout's virtual key.
+pub fn is_key_down(key: Key) -> bool {
+    let Some((sc, ext)) = scancode_for_key(key) else {
+        return false;
+    };
+    let code = if ext { 0xE000 | sc } else { sc };
+    let vk = unsafe { MapVirtualKeyExW(code, MAPVK_VSC_TO_VK_EX, input_hkl()) };
+    vk != 0 && unsafe { GetAsyncKeyState(vk as i32) } < 0
 }
 
 /// [`Key`] and "is it a press" for one `WH_KEYBOARD_LL` event. Input sent
@@ -330,6 +382,23 @@ impl Drop for GlyphProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `scancode_for_key` inverts `key_from_scancode` for every key it
+    /// names, so `is_key_down` asks about the right physical key.
+    #[test]
+    fn scancode_for_key_round_trips() {
+        let mut checked = 0;
+        for ext in [false, true] {
+            for sc in 0x01..=0x7F {
+                let key = key_from_scancode(sc, ext);
+                if let Some((sc2, ext2)) = scancode_for_key(key) {
+                    assert_eq!(key_from_scancode(sc2, ext2), key, "sc {sc:#x} ext {ext}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} keys checked");
+    }
 
     #[test]
     fn scancode_table_covers_every_qwerty_key() {

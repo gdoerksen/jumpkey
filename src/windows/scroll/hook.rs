@@ -47,16 +47,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
     PeekMessageW, PostThreadMessageW, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
     UnhookWindowsHookEx, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND, HC_ACTION, HHOOK,
-    HWND_MESSAGE, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT,
-    PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT,
-    WM_RBUTTONDOWN, WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WNDCLASSEXW, WTS_CONSOLE_DISCONNECT,
+    KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE,
+    WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    WM_APP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
+    WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WNDCLASSEXW, WS_POPUP, WTS_CONSOLE_DISCONNECT,
     WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
 };
 
-use crate::input::{KeyEvent, KeyTracker, Mods};
+use crate::input::{Key, KeyEvent, KeyTracker, Mods, NamedKey};
 use crate::scroll::{Area, Chords, Effect, ExitReason, ScrollMode, Verdict};
-use crate::windows::keyboard_layout::key_from_ll;
+use crate::windows::keyboard_layout::{is_key_down, key_from_ll};
 use crate::windows::JUMPKEY_INPUT_TAG;
 
 /// Thread message to the hook thread: a [`Command`] is waiting.
@@ -112,19 +112,15 @@ impl ScrollHook {
         let join = std::thread::Builder::new()
             .name("jumpkey-scroll-hook".into())
             .spawn(move || {
-                // Seeded on the hook thread, right before the hook goes
-                // in: the hotkey's own Ctrl+Alt are still held.
-                let seeded = held_mods();
-                let state = HookState {
-                    mode: ScrollMode::new(chords, seeded.shift),
-                    tracker: KeyTracker::with_mods(seeded),
+                let setup = Setup {
+                    chords,
                     out: fx_tx,
                     main_tid,
                     wake,
                     foreground: fg,
                     user_moved_pointer: moved_thread,
                 };
-                thread_main(state, cmd_rx, ready_tx);
+                thread_main(setup, cmd_rx, ready_tx);
             })
             .context("spawning scroll hook thread")?;
         let thread_id = match ready_rx.recv() {
@@ -190,7 +186,7 @@ impl Drop for ScrollHook {
 }
 
 /// Modifiers really held right now (`GetAsyncKeyState`), to seed the
-/// tracker: the hotkey's own Ctrl+Alt are down when the session starts.
+/// session: the hotkey's own Ctrl+Alt are usually still down.
 fn held_mods() -> Mods {
     let down = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(vk.0 as i32) } < 0;
     Mods {
@@ -198,6 +194,61 @@ fn held_mods() -> Mods {
         ctrl: down(VK_CONTROL),
         alt: down(VK_MENU),
         meta: down(VK_LWIN) || down(VK_RWIN),
+    }
+}
+
+/// What the hook thread needs to build its [`HookState`] once the hooks
+/// are in.
+struct Setup {
+    chords: Chords,
+    out: Sender<Effect>,
+    main_tid: u32,
+    wake: u32,
+    foreground: isize,
+    user_moved_pointer: Arc<AtomicBool>,
+}
+
+impl Setup {
+    /// Build the session from the keys held right now.
+    ///
+    /// Called **after** the hooks are installed and before the thread
+    /// pumps messages: a key event that arrives meanwhile waits for this
+    /// thread, so `GetAsyncKeyState` still shows the state before it, and
+    /// the event is then tracked on top. Seeding before installing would
+    /// miss a release in between and leave a modifier stuck.
+    fn into_state(self) -> HookState {
+        let held = held_mods();
+        let mut tracker = KeyTracker::new();
+        let mut mode = ScrollMode::new(self.chords, held);
+        // Feed held modifiers as presses so their auto-repeats are
+        // recognised as repeats.
+        for (on, key) in [
+            (held.shift, NamedKey::Shift),
+            (held.ctrl, NamedKey::Ctrl),
+            (held.alt, NamedKey::Alt),
+            (held.meta, NamedKey::Meta),
+        ] {
+            if on {
+                tracker.track(Key::Named(key), true);
+            }
+        }
+        // The hotkey's own key, if still down: its repeats and release
+        // are swallowed instead of toggling the mode off.
+        if let Some(key) = self.chords.scroll.map(|c| c.key) {
+            if is_key_down(key) {
+                tracker.track(key, true);
+                mode.seed_held_key(key);
+            }
+        }
+        HookState {
+            mode,
+            tracker,
+            out: self.out,
+            main_tid: self.main_tid,
+            wake: self.wake,
+            foreground: self.foreground,
+            user_moved_pointer: self.user_moved_pointer,
+        }
     }
 }
 
@@ -240,13 +291,12 @@ fn with_state<R>(f: impl FnOnce(&mut HookState) -> R) -> Option<R> {
     STATE.with(|s| s.try_borrow_mut().ok()?.as_mut().map(f))
 }
 
-fn thread_main(state: HookState, commands: Receiver<Command>, ready: Sender<Result<u32>>) {
+fn thread_main(setup: Setup, commands: Receiver<Command>, ready: Sender<Result<u32>>) {
     unsafe {
         // Make sure the thread has a message queue before anyone posts.
         let mut msg = MSG::default();
         let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
         let tid = GetCurrentThreadId();
-        STATE.with(|s| *s.borrow_mut() = Some(state));
 
         let kb =
             match SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), HINSTANCE::default(), 0) {
@@ -265,6 +315,9 @@ fn thread_main(state: HookState, commands: Receiver<Command>, ready: Sender<Resu
                 return;
             }
         };
+        // Hooks are in, nothing pumped yet: seed now (see `into_state`).
+        STATE.with(|s| *s.borrow_mut() = Some(setup.into_state()));
+
         let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
         let fg_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -316,9 +369,12 @@ fn thread_main(state: HookState, commands: Receiver<Command>, ready: Sender<Resu
     }
 }
 
-/// A message-only window that receives `WM_WTSSESSION_CHANGE`. `None` if
-/// it couldn't be created (the desktop-switch WinEvent still covers
-/// Ctrl+Alt+Del and UAC).
+/// A hidden window that receives `WM_WTSSESSION_CHANGE`. Top-level and
+/// never shown (no taskbar or Alt+Tab entry) rather than message-only:
+/// session notifications are documented for windows, and a message-only
+/// window can't be confirmed to receive them without locking the screen.
+/// `None` if it couldn't be created (the desktop-switch WinEvent still
+/// covers Ctrl+Alt+Del and UAC).
 unsafe fn create_session_window() -> Option<HWND> {
     let hinst: HINSTANCE = GetModuleHandleW(None).ok()?.into();
     let class = w!("jumpkey-scroll-session");
@@ -335,19 +391,19 @@ unsafe fn create_session_window() -> Option<HWND> {
         WINDOW_EX_STYLE(0),
         class,
         None,
-        WINDOW_STYLE(0),
+        WS_POPUP,
         0,
         0,
         0,
         0,
-        HWND_MESSAGE,
+        None,
         None,
         hinst,
         None,
     )
     .ok()?;
     if WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION).is_err() {
-        tracing::debug!("WTSRegisterSessionNotification failed; lock won't end scroll mode");
+        tracing::warn!("WTSRegisterSessionNotification failed; lock won't end scroll mode");
     }
     Some(hwnd)
 }

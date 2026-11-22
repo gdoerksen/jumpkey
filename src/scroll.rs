@@ -23,7 +23,7 @@
 
 use std::collections::HashSet;
 
-use crate::input::{Chord, Key, KeyEvent, NamedKey};
+use crate::input::{Chord, Key, KeyEvent, Mods, NamedKey};
 use crate::keyboard::{PhysKey, Row};
 use crate::model::Bounds;
 
@@ -100,6 +100,8 @@ pub enum ExitReason {
     Foreground,
     /// A pick hotkey: the pick runs next.
     Pick,
+    /// The Settings hotkey: Settings opens next.
+    Settings,
     /// Session locked or the desktop switched.
     Lock,
 }
@@ -114,6 +116,7 @@ impl ExitReason {
             Self::UnusedKeys => "unused_keys",
             Self::Foreground => "foreground",
             Self::Pick => "pick",
+            Self::Settings => "settings",
             Self::Lock => "lock",
         }
     }
@@ -150,6 +153,8 @@ pub enum Effect {
     Exit(ExitReason),
     /// Run a picker (after an `Exit(Pick)`).
     RunPick(PickKind),
+    /// Open Settings (after an `Exit(Settings)`).
+    OpenSettings,
     /// A lone Alt tap is being released: inject a no-op key first so the
     /// app sees Alt+key, not an Alt tap (which opens the menu bar).
     MaskAlt,
@@ -165,6 +170,9 @@ pub struct Chords {
     pub pick_element: Option<Chord>,
     /// Window picker.
     pub pick_window: Option<Chord>,
+    /// Settings. Matched so Settings doesn't open while the session is
+    /// still swallowing keys.
+    pub open_settings: Option<Chord>,
 }
 
 /// Unused keys in a row that end the mode.
@@ -220,14 +228,18 @@ pub struct ScrollMode {
     swallowed: HashSet<Key>,
     /// An Alt press seen in this session with nothing after it yet.
     alt_alone: bool,
+    /// Ctrl / Alt / Meta held since before the session (the hotkey's own
+    /// modifiers) and not released yet. They don't make a key a command
+    /// chord: `Ctrl+Alt+J`, then `k` with Ctrl+Alt still down, scrolls.
+    stale: Mods,
     fast: bool,
     exited: bool,
 }
 
 impl ScrollMode {
-    /// A new session. `shift_held` is the real Shift state when the mode
-    /// started.
-    pub fn new(chords: Chords, shift_held: bool) -> Self {
+    /// A new session. `held` is the real modifier state when the mode
+    /// started (the hotkey's own Ctrl+Alt are usually still down).
+    pub fn new(chords: Chords, held: Mods) -> Self {
         Self {
             areas: Vec::new(),
             active: 0,
@@ -237,9 +249,22 @@ impl ScrollMode {
             unused_streak: 0,
             swallowed: HashSet::new(),
             alt_alone: false,
-            fast: shift_held,
+            stale: Mods {
+                shift: false,
+                ..held
+            },
+            fast: held.shift,
             exited: false,
         }
+    }
+
+    /// `key` was already held when the session started (the hotkey's own
+    /// key): its auto-repeats and release are swallowed, so holding the
+    /// hotkey a little long doesn't toggle the mode straight off. The
+    /// caller also feeds it to its `KeyTracker` as a press, so repeats are
+    /// flagged.
+    pub fn seed_held_key(&mut self, key: Key) {
+        self.swallowed.insert(key);
     }
 
     /// The known areas.
@@ -253,7 +278,8 @@ impl ScrollMode {
     }
 
     /// True once an [`Effect::Exit`] was produced. Every later event
-    /// passes.
+    /// passes, except the repeats and release of a key whose press was
+    /// swallowed (no orphan key-ups reach the app).
     pub fn has_exited(&self) -> bool {
         self.exited
     }
@@ -277,7 +303,12 @@ impl ScrollMode {
     /// Decide what to do with one key event.
     pub fn on_key(&mut self, ev: KeyEvent) -> (Verdict, Vec<Effect>) {
         if self.exited {
-            return (Verdict::Pass, Vec::new());
+            let verdict = match (ev.down, ev.repeat) {
+                (false, _) if self.swallowed.remove(&ev.key) => Verdict::Swallow,
+                (true, true) if self.swallowed.contains(&ev.key) => Verdict::Swallow,
+                _ => Verdict::Pass,
+            };
+            return (verdict, Vec::new());
         }
         if ev.key.is_modifier() {
             return (Verdict::Pass, self.on_modifier(ev));
@@ -329,10 +360,18 @@ impl ScrollMode {
                 // the entry chord's Alt was pressed before the hook.
                 self.alt_alone = is_alt;
             }
-        } else if is_alt && std::mem::take(&mut self.alt_alone) {
-            fx.push(Effect::MaskAlt);
         } else {
-            self.alt_alone = false;
+            match ev.key {
+                Key::Named(NamedKey::Ctrl) => self.stale.ctrl = false,
+                Key::Named(NamedKey::Alt) => self.stale.alt = false,
+                Key::Named(NamedKey::Meta) => self.stale.meta = false,
+                _ => {}
+            }
+            if is_alt && std::mem::take(&mut self.alt_alone) {
+                fx.push(Effect::MaskAlt);
+            } else {
+                self.alt_alone = false;
+            }
         }
         if ev.key == Key::Named(NamedKey::Shift) && ev.mods.shift != self.fast {
             self.fast = ev.mods.shift;
@@ -359,9 +398,21 @@ impl ScrollMode {
                 return (Verdict::Swallow, fx);
             }
         }
+        if self.chords.open_settings.is_some_and(|c| c.matches(&ev)) {
+            let mut fx = self.exit(ExitReason::Settings);
+            fx.push(Effect::OpenSettings);
+            return (Verdict::Swallow, fx);
+        }
 
-        if ev.has_command_mod() {
-            let ctrl_only = ev.mods.ctrl && !ev.mods.alt && !ev.mods.meta && !ev.mods.shift;
+        // Modifiers held over from the hotkey don't count.
+        let m = Mods {
+            shift: ev.mods.shift,
+            ctrl: ev.mods.ctrl && !self.stale.ctrl,
+            alt: ev.mods.alt && !self.stale.alt,
+            meta: ev.mods.meta && !self.stale.meta,
+        };
+        if m.ctrl || m.alt || m.meta {
+            let ctrl_only = m.ctrl && !m.alt && !m.meta && !m.shift;
             if ctrl_only && (ev.key == KEY_N || ev.key == KEY_P) {
                 self.unused_streak = 0;
                 let fx = self.step_area(ev.key == KEY_N);
@@ -562,14 +613,21 @@ impl Motion {
         if d.held {
             return;
         }
+        d.held = true;
+        d.decel = 0.0;
+        if d.v > 0.0 {
+            // Pressed again while still easing out: carry on gliding from
+            // the current speed (ramping back up now) instead of coasting
+            // for `hold_ms` or adding a step on top.
+            d.pressed_at = now_ms - self.cfg.hold_ms;
+            return;
+        }
         // Whatever was left of an earlier pulse is still delivered.
         let leftover = d.pulse_total - d.pulse_done;
-        d.held = true;
         d.pressed_at = now_ms;
         d.pulse_total = step + leftover.max(0.0);
         d.pulse_done = 0.0;
         d.pulse_start = now_ms;
-        d.decel = 0.0;
     }
 
     /// A direction key went up.
@@ -703,6 +761,14 @@ mod tests {
                 mods: ca,
                 key: SPACE,
             }),
+            open_settings: Some(Chord {
+                mods: Mods {
+                    ctrl: true,
+                    shift: true,
+                    ..Mods::NONE
+                },
+                key: phys(Row::Bottom, 7), // ","
+            }),
         }
     }
 
@@ -714,7 +780,7 @@ mod tests {
 
     impl Rig {
         fn new() -> Self {
-            let mut mode = ScrollMode::new(chords(), false);
+            let mut mode = ScrollMode::new(chords(), Mods::NONE);
             mode.on_areas(vec![area(0), area(1), area(2)], 0);
             Self {
                 mode,
@@ -985,12 +1051,7 @@ mod tests {
     #[test]
     fn releasing_the_entry_chord_is_not_a_lone_alt() {
         // The hotkey's Ctrl+Alt were pressed before the hook existed.
-        let mut mode = ScrollMode::new(chords(), false);
-        let mut t = KeyTracker::with_mods(Mods {
-            ctrl: true,
-            alt: true,
-            ..Mods::NONE
-        });
+        let (mut mode, mut t) = entry_rig(false);
         assert_eq!(mode.on_key(t.track(KEY_J, false)).0, Verdict::Pass);
         assert_eq!(mode.on_key(t.track(CTRL, false)), (Verdict::Pass, vec![]));
         assert_eq!(mode.on_key(t.track(ALT, false)), (Verdict::Pass, vec![]));
@@ -1022,11 +1083,112 @@ mod tests {
             ExitReason::UnusedKeys,
             ExitReason::Foreground,
             ExitReason::Pick,
+            ExitReason::Settings,
             ExitReason::Lock,
         ] {
             let s = r.as_str();
             assert!(!s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_'));
         }
+    }
+
+    // ---- session start: the hotkey's own keys are still held ----
+
+    /// Seed a session the way the hook does after `Ctrl+Alt+J`: Ctrl, Alt
+    /// and J still down.
+    fn entry_rig(j_held: bool) -> (ScrollMode, KeyTracker) {
+        let held = Mods {
+            ctrl: true,
+            alt: true,
+            ..Mods::NONE
+        };
+        let mut mode = ScrollMode::new(chords(), held);
+        let mut t = KeyTracker::new();
+        t.track(CTRL, true);
+        t.track(ALT, true);
+        if j_held {
+            t.track(KEY_J, true);
+            mode.seed_held_key(KEY_J);
+        }
+        (mode, t)
+    }
+
+    #[test]
+    fn holding_the_hotkey_long_does_not_toggle_the_mode_off() {
+        let (mut m, mut t) = entry_rig(true);
+        for _ in 0..5 {
+            let (v, fx) = m.on_key(t.track(KEY_J, true)); // auto-repeat
+            assert_eq!((v, fx), (Verdict::Swallow, vec![]));
+        }
+        assert_eq!(m.on_key(t.track(KEY_J, false)), (Verdict::Swallow, vec![]));
+        assert!(!m.has_exited());
+        // Pressing the hotkey again after letting go of J does toggle off.
+        let (_, fx) = m.on_key(t.track(KEY_J, true));
+        assert_eq!(fx, vec![Effect::Exit(ExitReason::Hotkey)]);
+    }
+
+    #[test]
+    fn scroll_keys_work_while_the_hotkey_mods_are_still_held() {
+        let (mut m, mut t) = entry_rig(true);
+        m.on_key(t.track(KEY_J, false));
+        let (v, fx) = m.on_key(t.track(KEY_K, true));
+        assert_eq!(v, Verdict::Swallow);
+        assert!(matches!(
+            fx[..],
+            [Effect::KeyMotion {
+                dir: Dir::Up,
+                down: true,
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn hotkey_mods_count_again_once_released_and_pressed() {
+        let (mut m, mut t) = entry_rig(false);
+        m.on_key(t.track(ALT, false));
+        m.on_key(t.track(CTRL, false));
+        m.on_key(t.track(CTRL, true));
+        assert_eq!(
+            m.on_key(t.track(KEY_C, true)).0,
+            Verdict::Pass,
+            "fresh Ctrl+C"
+        );
+    }
+
+    #[test]
+    fn released_hotkey_mod_stops_being_stale_even_if_the_other_stays() {
+        let (mut m, mut t) = entry_rig(false);
+        m.on_key(t.track(CTRL, false));
+        m.on_key(t.track(CTRL, true));
+        // Ctrl is fresh, Alt still stale: Ctrl+N switches areas.
+        m.on_areas(vec![area(0), area(1)], 0);
+        let (v, fx) = m.on_key(t.track(KEY_N, true));
+        assert_eq!((v, fx), (Verdict::Swallow, vec![Effect::SelectArea(1)]));
+    }
+
+    #[test]
+    fn settings_hotkey_exits_then_opens_settings() {
+        let mut r = Rig::new();
+        r.ev(CTRL, true);
+        r.ev(SHIFT, true);
+        let (v, fx) = r.ev(phys(Row::Bottom, 7), true);
+        assert_eq!(v, Verdict::Swallow);
+        assert_eq!(
+            fx,
+            vec![Effect::Exit(ExitReason::Settings), Effect::OpenSettings]
+        );
+    }
+
+    #[test]
+    fn swallowed_key_up_after_exit_is_swallowed() {
+        let mut r = Rig::new();
+        r.ev(KEY_J, true);
+        r.ev(ESC, true);
+        assert_eq!(r.ev(KEY_J, true).0, Verdict::Swallow, "repeat of held j");
+        assert_eq!(r.ev(ESC, false).0, Verdict::Swallow);
+        assert_eq!(r.ev(KEY_J, false).0, Verdict::Swallow);
+        assert_eq!(r.ev(KEY_X, true).0, Verdict::Pass, "new keys pass");
+        assert_eq!(r.ev(KEY_X, false).0, Verdict::Pass);
     }
 
     // ---- Motion ----
@@ -1134,6 +1296,22 @@ mod tests {
         m.press(Dir::Up, 0.0);
         let (_, y) = run(&mut m, 0.0, 1000.0);
         assert!(close(y, 0.0), "{y}");
+    }
+
+    #[test]
+    fn repress_during_ease_out_glides_on_without_coasting() {
+        let cfg = MotionConfig::default();
+        let mut m = Motion::new(cfg);
+        m.press(Dir::Down, 0.0);
+        run(&mut m, 0.0, 600.0);
+        m.release(Dir::Down);
+        run(&mut m, 600.0, 620.0);
+        m.press(Dir::Down, 620.0);
+        let a = run(&mut m, 620.0, 640.0).1;
+        let b = run(&mut m, 640.0, 660.0).1;
+        assert!(b > a, "ramping back up, not coasting: {a} then {b}");
+        let c = run(&mut m, 660.0, 1660.0).1;
+        assert!((c - cfg.speed).abs() < 1.0, "back at full speed: {c}");
     }
 
     #[test]
