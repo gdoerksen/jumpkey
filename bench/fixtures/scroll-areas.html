@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pick-bench: scroll areas</title>
+<!--
+  Scroll mode (#54) fixture: every kind of scroll container scroll mode
+  should find, plus decoys it should not. Expected areas (6 that scroll):
+    1. the page itself (vertical)
+    2. #sidebar          overflow-y: auto      (vertical)
+    3. #code             <pre> overflow-x: auto (horizontal)
+    4. #strip            overflow-x: auto      (horizontal card strip)
+    5. #outer            overflow-y: auto      (vertical, contains 6)
+    6. #inner            overflow-y: auto      (vertical, nested in 5)
+  Decoys (must NOT count as scrollable):
+    #clipped   overflow: hidden with overflowing content
+    #fits      overflow: auto but the content fits
+-->
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 0; }
+  header { padding: 12px 24px; background: #eef; }
+  .layout { display: grid; grid-template-columns: 220px 1fr; gap: 16px; padding: 16px 24px; }
+  #sidebar { height: 420px; overflow-y: auto; border: 1px solid #ccc; }
+  #sidebar a { display: block; padding: 6px 10px; }
+  main > section { margin-bottom: 24px; }
+  #code { overflow-x: auto; white-space: pre; background: #f6f6f6; padding: 10px; max-width: 700px; }
+  #strip { display: flex; gap: 12px; overflow-x: auto; max-width: 700px; padding-bottom: 6px; }
+  #strip .card { flex: 0 0 160px; height: 90px; background: #e8f0e8; border: 1px solid #9b9; }
+  #outer { height: 260px; overflow-y: auto; border: 1px solid #c99; max-width: 700px; padding: 8px; }
+  #inner { height: 140px; overflow-y: auto; border: 1px solid #99c; margin: 12px 0; }
+  #clipped { height: 80px; overflow: hidden; border: 1px dashed #aaa; max-width: 700px; }
+  #fits { height: 80px; overflow: auto; border: 1px dashed #aaa; max-width: 700px; }
+  .tall { height: 1600px; background: linear-gradient(#fff, #ddd); }
+</style>
+</head>
+<body>
+<header><h1>Scroll areas</h1></header>
+<div class="layout">
+  <nav id="sidebar" aria-label="Sections"></nav>
+  <main>
+    <section>
+      <h2>Code</h2>
+      <div id="code"></div>
+    </section>
+    <section>
+      <h2>Cards</h2>
+      <div id="strip"></div>
+    </section>
+    <section>
+      <h2>Nested</h2>
+      <div id="outer">
+        <p>Outer scroller, top.</p>
+        <div id="inner"></div>
+        <div class="tall"></div>
+      </div>
+    </section>
+    <section>
+      <h2>Decoys</h2>
+      <div id="clipped"><div class="tall"></div></div>
+      <p></p>
+      <div id="fits"><p>This content fits; nothing to scroll.</p></div>
+    </section>
+    <div class="tall"></div>
+  </main>
+</div>
+<script>
+  const side = document.getElementById('sidebar');
+  for (let i = 1; i <= 60; i++) {
+    const a = document.createElement('a'); a.href = '#'; a.textContent = 'Section ' + i; side.appendChild(a);
+  }
+  document.getElementById('code').textContent = Array.from({length: 12}, (_, i) =>
+    `line ${i + 1}: ` + 'const value = compute(alpha, beta, gamma, delta); '.repeat(6)).join('\n');
+  const strip = document.getElementById('strip');
+  for (let i = 1; i <= 24; i++) {
+    const c = document.createElement('button'); c.className = 'card'; c.textContent = 'Card ' + i; strip.appendChild(c);
+  }
+  const inner = document.getElementById('inner');
+  for (let i = 1; i <= 40; i++) {
+    const p = document.createElement('p'); p.textContent = 'Inner row ' + i; inner.appendChild(p);
+  }
+</script>
+</body>
+</html>
