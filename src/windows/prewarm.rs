@@ -13,12 +13,17 @@
 //!    [`crate::windows::WindowsBackend`] (separate `UIAutomation`
 //!    client, separate `self.elements` registry) and shares only the
 //!    `Arc<Mutex<CacheManager>>` with the hotkey-driven backend.
-//! 2. A `SetWinEventHook` for `EVENT_SYSTEM_FOREGROUND` (and a
-//!    rate-limited subscription to `EVENT_OBJECT_LOCATIONCHANGE`)
-//!    that forwards the new HWND to the worker over a bounded
-//!    channel. "Bounded" matters — when the user is alt-tabbing
-//!    rapidly we want to drop intermediate notifications and walk
-//!    only the most recent foreground window.
+//! 2. A `SetWinEventHook` for `EVENT_SYSTEM_FOREGROUND` that forwards
+//!    the new HWND to the worker over a bounded channel. "Bounded"
+//!    matters — when the user is alt-tabbing rapidly we want to drop
+//!    intermediate notifications and walk only the most recent
+//!    foreground window.
+//! 3. A `SetWinEventHook` for `EVENT_OBJECT_LOCATIONCHANGE` that
+//!    **invalidates** the moved window's cache entry (any top-level
+//!    window, not just the foreground one). It used to queue a re-walk,
+//!    but a walk by this worker produces an entry the hotkey path can't
+//!    use, so dropping the stale entry has the same effect on the next
+//!    press at the cost of a hash-map removal (review #10).
 //!
 //! The hook proc is a `unsafe extern "system" fn` with no user
 //! pointer, so the only way to fan out into the worker is through a
@@ -31,7 +36,7 @@
 use std::sync::mpsc::{sync_channel, SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Context;
 use parking_lot::Mutex;
@@ -43,20 +48,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::cache::CacheManager;
-use crate::windows::WindowsBackend;
+use crate::windows::{hwnd_to_key, WindowsBackend};
 
 /// Channel buffer size for the foreground-HWND queue. Bounded at 1 so
 /// fast alt-tab spam collapses to "just walk the latest window" — older
 /// pending HWNDs are silently dropped on `try_send`. Small buffer is
 /// the entire point: we want freshness, not throughput.
 const QUEUE_CAPACITY: usize = 1;
-
-/// Throttle for `EVENT_OBJECT_LOCATIONCHANGE`. The OS posts this event
-/// at video-frame rates while the user resizes / scrolls, and walking
-/// the UIA tree on every one would waste both CPU and the target
-/// process's UI thread. Re-walking at most every 250 ms is plenty for
-/// "the layout settled, refresh the cache".
-const LOCATIONCHANGE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Process-wide channel sender, populated at the first
 /// [`Prewarmer::start`] call. The WinEvent hook proc is a free C
@@ -76,11 +74,15 @@ static SENDER: OnceLock<SyncSender<isize>> = OnceLock::new();
 /// `UnhookWinEvent` accepts the rebuilt newtype just fine.
 static HOOKS: OnceLock<Mutex<Vec<isize>>> = OnceLock::new();
 
-/// Last time the location-change hook accepted an event. Used as a
-/// soft debounce so a bursty resize / scroll doesn't drown the
-/// worker. The `Mutex` is fine here — the hook proc only locks for a
-/// few microseconds and never blocks the worker.
-static LAST_LOCATIONCHANGE: OnceLock<Mutex<Instant>> = OnceLock::new();
+/// The shared cache, for the location-change hook to invalidate
+/// entries of windows that moved or resized. Set once by
+/// [`Prewarmer::start`].
+///
+/// Locking it from the hook proc is safe: the hook runs on the main
+/// thread only while that thread pumps messages, and no code holds
+/// this lock across a message pump (every user takes and drops it in
+/// one statement). The worker holds it only for an insert.
+static CACHE: OnceLock<Arc<Mutex<CacheManager>>> = OnceLock::new();
 
 /// Owner of the pre-warm worker thread. The `Drop` impl unhooks the
 /// WinEvent subscriptions and closes the channel so the worker exits
@@ -118,7 +120,7 @@ impl Prewarmer {
             .set(tx.clone())
             .map_err(|_| anyhow::anyhow!("prewarm sender slot already populated"))?;
         HOOKS.get_or_init(|| Mutex::new(Vec::new()));
-        LAST_LOCATIONCHANGE.get_or_init(|| Mutex::new(Instant::now()));
+        let _ = CACHE.set(Arc::clone(&cache));
 
         // Worker thread. Owns its own backend; never touches the
         // main backend's `self.elements`. Errors are logged and the
@@ -158,12 +160,11 @@ impl Prewarmer {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             )
         };
-        // A failed location-change hook is non-fatal: we still get
-        // foreground events, which is the dominant signal. Log and
-        // continue.
+        // A failed location-change hook is non-fatal: entries then
+        // only expire by age. Log and continue.
         if location_hook.is_invalid() {
             tracing::warn!(
-                "SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE) failed; pre-warm will only react to foreground changes"
+                "SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE) failed; moved windows' cache entries will only expire by age"
             );
         }
 
@@ -271,25 +272,16 @@ unsafe extern "system" fn win_event_proc(
     }
 
     if event == EVENT_OBJECT_LOCATIONCHANGE {
-        // Soft debounce so a busy resize / scroll doesn't queue a
-        // walk per frame. We only ever schedule the *latest* HWND
-        // anyway (channel capacity == 1), but the debounce keeps the
-        // hook proc itself cheap.
-        if let Some(slot) = LAST_LOCATIONCHANGE.get() {
-            let mut last = slot.lock();
-            if last.elapsed() < LOCATIONCHANGE_DEBOUNCE {
-                return;
-            }
-            *last = Instant::now();
+        // The window moved or resized, so its cached element bounds
+        // are stale. Drop the entry; the next press searches fresh.
+        // Any top-level window counts (multi-window scopes cache
+        // background windows too), and invalidating is cheap enough
+        // that it needs no debounce or foreground filter. No re-walk:
+        // this worker's entries aren't usable by the hotkey path until
+        // the cache shares UIA elements (roadmap step 6).
+        if let Some(cache) = CACHE.get() {
+            cache.lock().invalidate(hwnd_to_key(hwnd));
         }
-
-        // A move/resize / scroll on the foreground window invalidates
-        // the cache for that HWND — its element bounds and offscreen
-        // bits are now stale. The cleanest hand-off is to push the
-        // HWND back through the same channel and let the worker
-        // re-walk it; that overwrites the cached entry as a side
-        // effect (`CacheManager::insert` is upsert).
-        let _ = try_send_hwnd(hwnd);
         return;
     }
 

@@ -848,7 +848,7 @@ fn cached_bool(el: &UIElement, prop: UIProperty) -> uiautomation::Result<bool> {
 /// Pack a Win32 HWND into the cache's opaque [`WindowKey`]. Round-trip
 /// is one-way (we never reconstruct an HWND from a key); we only need
 /// equality + hashing inside the map.
-fn hwnd_to_key(hwnd: HWND) -> WindowKey {
+pub(crate) fn hwnd_to_key(hwnd: HWND) -> WindowKey {
     hwnd.0 as usize as u64
 }
 
