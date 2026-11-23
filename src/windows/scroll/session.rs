@@ -65,8 +65,11 @@ enum Discovery {
 
 /// A running scroll mode session.
 pub struct ScrollSession {
-    hook: ScrollHook,
+    // Field order is drop order: the engine (which releases keys it
+    // pressed) goes before the hook, as in `end`, also when the session
+    // is dropped without `end` (jumpkey quitting mid-session).
     engine: Engine,
+    hook: ScrollHook,
     discovered: Receiver<Discovery>,
     target: HWND,
     frame: Bounds,

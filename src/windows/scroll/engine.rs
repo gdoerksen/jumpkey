@@ -19,6 +19,8 @@
 //!   the app sees a plain wheel. If the user lets go of a key around that
 //!   moment, the engine releases any key it pressed again that is no
 //!   longer really held (the hook keeps the real state in [`RealMods`]).
+//!   When the session ends it releases every key it pressed again, held
+//!   or not, so a release the hook missed can't leave a key stuck down.
 //!   Alt is left alone: lifting it could open the app's menu bar.
 //!
 //! It has its own [`UIAutomation`] client, so a slow app never blocks the
@@ -314,6 +316,28 @@ impl Wheel {
     }
 }
 
+impl Drop for Wheel {
+    /// Release every key this engine pressed again, whether or not the
+    /// hook says the user still holds it. The hook's view can be stale:
+    /// Windows skips (and may silently remove) a low-level hook that
+    /// answers too slowly, so a real release can go unseen and the key
+    /// would stay down after scroll mode ends. A stray key-up for a key
+    /// still physically held costs little; a stuck Shift or Ctrl breaks
+    /// every app. Runs on a normal exit and on a panic in the thread.
+    fn drop(&mut self) {
+        if self.repressed == 0 {
+            return;
+        }
+        let ups: Vec<INPUT> = SIDES
+            .iter()
+            .filter(|(bit, ..)| self.repressed & bit != 0)
+            .map(|&(_, vk, ext)| tagged_key(vk, ext, true))
+            .collect();
+        send(&ups);
+        self.repressed = 0;
+    }
+}
+
 fn run(cfg: MotionConfig, rx: Receiver<Cmd>, real: RealMods) {
     let uia = UIAutomation::new().ok();
     let epoch = Instant::now();
@@ -369,10 +393,8 @@ fn run(cfg: MotionConfig, rx: Receiver<Cmd>, real: RealMods) {
         let (dx, dy) = motion.advance(now());
         wheel_out.send(dx, dy);
     }
-    // Session over: release anything re-pressed that the user isn't
-    // holding. A key still really held stays down (its real release will
-    // reach the app normally).
-    wheel_out.repair();
+    // Session over: dropping `wheel_out` releases every key it pressed
+    // again (see `impl Drop for Wheel`).
 }
 
 /// Wheel fallback for a jump: direction and lines.
