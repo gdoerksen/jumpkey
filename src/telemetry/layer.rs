@@ -36,7 +36,7 @@ use super::clock::{cycles_to_us, qpc, qpc_freq, qpc_us, thread_cycles, thread_id
 use super::{SCHEMA, TARGET};
 
 /// Span names that start a trace.
-pub(crate) const ROOTS: &[&str] = &["pick"];
+pub(crate) const ROOTS: &[&str] = &["pick", "scroll"];
 
 /// Open traces older than this are written as incomplete.
 const STALE_AFTER_SECS: i64 = 600;
@@ -49,6 +49,8 @@ const STRING_FIELDS: &[&str] = &[
     "scope",
     "outcome",
     "cancel_by",
+    "first_from",
+    "exit_by",
     "modifier",
     "cache",
     "action",

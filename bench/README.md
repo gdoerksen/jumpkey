@@ -182,7 +182,10 @@ Changing one means updating pick-bench in the same PR:
    `bench/config/<scope>.toml`). Logs and telemetry go under
    `%LOCALAPPDATA%` (also sandboxed).
 3. `hotkeys.pick_element` in the template is the chord pick-bench presses
-   (override with `--hotkey`). `scope.mode` selects the scope.
+   (override with `--hotkey`). `scope.mode` selects the scope. Every
+   chord in `[hotkeys]` is checked for conflicts before a run, so the
+   templates set all of them to unusual chords, including `scroll_mode`
+   (`Ctrl+Alt+Shift+F9`).
 4. **Overlay visible** = any top-level window of the jumpkey process
    raising `EVENT_OBJECT_SHOW`; **closed** = that window raising
    `EVENT_OBJECT_HIDE`. No window class or count is assumed, so

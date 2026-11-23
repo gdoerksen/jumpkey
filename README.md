@@ -114,12 +114,13 @@ The binary uses the Windows GUI subsystem in release builds, running silently in
 
 ## Using it
 
-After launching, `jumpkey` registers two global hotkeys and a tray icon. The default chords below can be changed from `Settings...` in the tray menu — see [Configuration](#configuration).
+After launching, `jumpkey` registers its global hotkeys and a tray icon. The default chords below can be changed from `Settings...` in the tray menu — see [Configuration](#configuration).
 
 | Action          | Default keys            | What it does                                                                       |
 | --------------- | ----------------------- | ---------------------------------------------------------------------------------- |
 | Pick element    | `Ctrl + Shift + Space`  | Hints every interactable control inside the focused window. Type one to invoke it. |
 | Pick window     | `Ctrl + Alt + Space`    | Hints every visible top-level window across all monitors. Type one to focus it.    |
+| Scroll mode     | `Ctrl + Alt + J`        | Scroll the focused window from the keyboard (see [Scroll mode](#scroll-mode)).     |
 | Confirm         | type the hint label     | Commits the selection (invokes the element's primary action).                      |
 | Double-click    | `Ctrl` + hint letter    | Hold Ctrl while typing the last letter to double-click instead of invoking.        |
 | Right-click     | `Shift` + hint letter   | Hold Shift while typing the last letter to open the element's context menu.        |
@@ -134,6 +135,24 @@ The tray icon's right-click menu mirrors the two leader chords, gives you a `Set
 
 Yellow badges = element picker (will *invoke* the control). Orange badges = window picker (will *focus* the window). Both show the hint letters on the home row by default — colors and the alphabet are editable from `Settings...`.
 
+### Scroll mode
+
+`Ctrl + Alt + J` turns scroll mode on; press it again (or Esc) to turn it off. The window you were using keeps focus, so open menus stay open. A blue outline marks the area that scrolls; other scrollable areas get small number badges.
+
+| Key | What it does |
+| --- | --- |
+| `h` `j` `k` `l` | Scroll left / down / up / right. A tap scrolls one step (like a wheel notch); hold to glide. Keys held together combine. |
+| `Shift` + `h j k l` | Faster (× 3). |
+| `d` / `u` | Half a page down / up. |
+| `g g` / `G` | Top / bottom. |
+| `Tab`, `↓`, `Ctrl + N` / `Shift + Tab`, `↑`, `Ctrl + P` | Next / previous area. |
+| `1` – `9` | Jump to that area. |
+| `Esc`, or the hotkey again | Leave scroll mode. |
+
+Scroll mode also ends when you click the mouse (the click still goes through), switch windows, lock the PC, or press a pick hotkey (the pick then runs). Other letters are swallowed so they don't type into the app; three of them in a row end scroll mode. Shortcuts with `Ctrl`, `Alt` or `Win` (like `Ctrl + C` or `Alt + Tab`) reach the app as usual. The mouse wheel keeps working. The pointer moves into the area being scrolled and goes back when scroll mode ends, unless you moved the mouse yourself.
+
+Keys are physical positions, so `h j k l` stay on the home row on Dvorak, Colemak and other layouts. Scroll mode doesn't work in windows running as administrator. In browsers, only scroll areas the page exposes to accessibility tools get a number; any other area still scrolls when the pointer is over it. Speed is set in `config.toml` under `[scroll]` and applies immediately.
+
 ### Web browsers
 
 `Ctrl+Shift+Space` works inside Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi, Arc) and finds the actual links, buttons, file rows, nav tabs, and form inputs *inside* the rendered page — not just the browser chrome. jumpkey wakes up Chromium's accessibility tree on demand by sending `WM_GETOBJECT` to every renderer HWND before walking, and descends 32 levels deep on browser foregrounds (vs 12 for desktop apps) since DOM trees routinely nest 15–25 deep. Firefox is on the roadmap for v0.4.x; today it surfaces only chrome elements.
@@ -142,7 +161,7 @@ Yellow badges = element picker (will *invoke* the control). Orange badges = wind
 
 `jumpkey` is configured through a small visual dialog reachable from the tray icon (`Settings...`), so you never have to touch a config file unless you want to. The dialog lets you change:
 
-- **Hotkeys** — both leader chords. Type any combination of `Ctrl`, `Shift`, `Alt`, `Win`/`Super` modifiers plus a key (`A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, arrow keys, punctuation, etc.). Example: `Ctrl+Alt+K`.
+- **Hotkeys** — the pick, settings and scroll mode chords. Type any combination of `Ctrl`, `Shift`, `Alt`, `Win`/`Super` modifiers plus a key (`A`-`Z`, `0`-`9`, `F1`-`F24`, `Space`, arrow keys, punctuation, etc.). Example: `Ctrl+Alt+K`.
 - **Hint alphabet** — the characters used to build hint labels. Default: the home row, `fjdkslagh` on QWERTY. Built-in presets are ordered strongest finger first — index, middle, ring, pinky, then sideways stretches; home row before the top, bottom and number rows — so the closest targets get the easiest keys. The order follows your keyboard layout and geometry (on an angle-mod board `c` counts as an index key). Two-key hints start with the strongest-finger keys that can still be followed by nearly every other key — the middle fingers, `d` then `k`, on the home row — since `f` / `j` can't be followed by `g` / `h` under the same-finger rule. The Settings dialog now also exposes:
   - a **preset** dropdown (`home_row`, `home_row_extended`, `lowercase_alpha`, `alphanumeric`, `numbers`, `custom`),
   - **Include numbers** / **Include extended (`;` `'`)** toggles that add digits or the extended home-row keys (sorted into place by finger),
@@ -170,6 +189,7 @@ The Settings dialog is the recommended path, but `%APPDATA%\jumpkey\config.toml`
 [hotkeys]
 pick_element = "Ctrl+Shift+Space"
 pick_window  = "Ctrl+Alt+Space"
+scroll_mode  = "Ctrl+Alt+J"
 
 [hints]
 alphabet           = "fjdkslagh"
@@ -194,6 +214,13 @@ max_elements = 300                       # hard cap for all_windows mode
 [performance]
 enable_caching = true                    # memoise UIA element trees per window
 cache_ttl_ms   = 500                     # how long a cached enumeration stays fresh
+
+[scroll]                                 # scroll mode feel; applies as soon as you save
+step            = 3                      # lines one tap of h/j/k/l scrolls (3 = one wheel notch by default)
+speed           = 40                     # lines per second while a key is held
+fast_multiplier = 3                      # Shift multiplies step and speed by this
+hold_ms         = 150                    # hold a key this long to start gliding
+ramp_ms         = 150                    # time to reach full speed
 
 [colors.element]
 badge_bg     = "#FFE500"  # leave empty to keep the default
@@ -283,6 +310,7 @@ Missing keys, missing sections, and an entirely missing file all fall back to th
 - [x] **Finger-aware labels**: no repeated or same-finger consecutive keys (`[hints] consecutive_keys`), strongest fingers first
 - [x] **Center-out label order** (`[hints] order` = `center` | `cursor` | `reading`)
 - [x] **Callout badges** with a tail pointing at the element (`shape = "callout" | "rect"`), plus "Auto" badge-size checkboxes in Settings
+- [x] **Scroll mode** (`Ctrl+Alt+J`): Homerow-style keyboard scrolling with `h j k l`, jumps and area switching
 - [ ] New tray icon and branding artwork (the current art is still keyhop's)
 - [ ] Tag and publish the release
 

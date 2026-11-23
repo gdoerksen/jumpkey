@@ -28,6 +28,8 @@ use std::process::ExitCode;
 #[cfg(windows)]
 use jumpkey::config::ScopeMode;
 #[cfg(windows)]
+use jumpkey::scroll::{Chords, ExitReason, PickKind};
+#[cfg(windows)]
 use jumpkey::telemetry::Pick;
 #[cfg(windows)]
 use jumpkey::{tel_event, tel_record, tel_span};
@@ -40,6 +42,10 @@ use jumpkey::windows::{
     hotkey::{HotkeyAction, HotkeyConflict, Hotkeys},
     ipc, notification,
     overlay::{pick_hint, Hint, HintStyle, PickModifier},
+    scroll::{
+        indicator::Indicator,
+        session::{FollowUp, ScrollSession, StartError},
+    },
     settings_window,
     single_instance::InstanceGuard,
     splash_screen::SplashScreen,
@@ -328,6 +334,7 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
     println!("  Pick element : {}", config.hotkeys.pick_element);
     println!("  Pick window  : {}", config.hotkeys.pick_window);
     println!("  Open settings: {}", config.hotkeys.open_settings);
+    println!("  Scroll mode  : {}", config.hotkeys.scroll_mode);
     println!("  Cancel       : Esc (inside overlay)");
     #[cfg(debug_assertions)]
     {
@@ -417,6 +424,16 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
         hint_order: config.hints.order,
     };
 
+    // Scroll mode (#54): at most one session, run from this loop (never a
+    // nested loop, so its hotkey toggles instead of queueing). The
+    // indicator window is created on first use and kept.
+    let mut scroll: Option<ScrollSession> = None;
+    let mut scroll_indicator: Option<Indicator> = None;
+    let mut scroll_motion = config.scroll;
+    // Actions queued by an ending scroll session (a pick hotkey pressed
+    // during scroll mode runs once the session is torn down).
+    let mut pending: Vec<HotkeyAction> = Vec::new();
+
     // Win32 message loop. `GetMessageW` is required on this thread for the
     // global-hotkey crate's hidden message window to receive `WM_HOTKEY`,
     // and for tray-icon's notification window to receive shell callbacks.
@@ -464,12 +481,48 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
             continue;
         }
 
-        unsafe {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        // Scroll mode's hook thread or discovery worker queued something.
+        if msg.hwnd.0.is_null() && msg.message == WM_USER_SCROLL {
+            if let Some(session) = scroll.as_mut() {
+                if let Some((reason, follow)) = session.on_wake(scroll_indicator.as_ref()) {
+                    if let Some(s) = scroll.take() {
+                        s.end(reason, scroll_indicator.as_ref());
+                    }
+                    pending.extend(follow.map(|f| match f {
+                        FollowUp::Pick(PickKind::Element) => HotkeyAction::PickElement,
+                        FollowUp::Pick(PickKind::Window) => HotkeyAction::PickWindow,
+                        FollowUp::Settings => HotkeyAction::OpenSettings,
+                    }));
+                }
+            }
+        } else {
+            unsafe {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
 
-        for action in hotkeys.poll_actions() {
+        let mut actions = std::mem::take(&mut pending);
+        actions.extend(hotkeys.poll_actions());
+        for action in actions {
+            // Any hotkey that reaches here while scroll mode is on ends it
+            // first. (The hook normally swallows jumpkey's chords and ends
+            // the session itself; this covers a chord that slipped through
+            // to RegisterHotKey.)
+            if let Some(session) = scroll.take() {
+                let reason = match action {
+                    HotkeyAction::ScrollMode => ExitReason::Hotkey,
+                    HotkeyAction::OpenSettings => ExitReason::Settings,
+                    _ => ExitReason::Pick,
+                };
+                session.end(reason, scroll_indicator.as_ref());
+                if action == HotkeyAction::ScrollMode {
+                    continue;
+                }
+            } else if action == HotkeyAction::ScrollMode {
+                scroll = start_scroll(&config, main_thread_id, &mut scroll_indicator);
+                continue;
+            }
             match action {
                 HotkeyAction::OpenSettings => match open_settings(&config) {
                     Ok(Some(new_config)) => {
@@ -498,6 +551,14 @@ fn run_windows(cli: Cli) -> anyhow::Result<()> {
                         );
                     }
                 }
+            }
+        }
+
+        // `[scroll]` hot-reload reaches a running session too.
+        if config.scroll != scroll_motion {
+            scroll_motion = config.scroll;
+            if let Some(s) = &scroll {
+                s.set_motion(scroll_motion.motion());
             }
         }
 
@@ -771,7 +832,8 @@ fn dispatch_hotkey(
     let kind = match action {
         HotkeyAction::PickElement => "element",
         HotkeyAction::PickWindow => "window",
-        HotkeyAction::OpenSettings => return Ok(()), // Handled separately in main loop
+        // Handled separately in the main loop.
+        HotkeyAction::OpenSettings | HotkeyAction::ScrollMode => return Ok(()),
     };
     // Root of this press's telemetry trace (no-op without the feature);
     // written when it drops at the end of this function.
@@ -780,7 +842,56 @@ fn dispatch_hotkey(
     match action {
         HotkeyAction::PickElement => handle_pick_element(backend, runtime, &pick),
         HotkeyAction::PickWindow => handle_pick_window(runtime, &pick),
-        HotkeyAction::OpenSettings => Ok(()),
+        HotkeyAction::OpenSettings | HotkeyAction::ScrollMode => Ok(()),
+    }
+}
+
+/// Thread message from scroll mode's hook thread and discovery worker:
+/// effects or areas are queued (`WM_USER + 1` is the config reload).
+#[cfg(windows)]
+const WM_USER_SCROLL: u32 = ::windows::Win32::UI::WindowsAndMessaging::WM_USER + 2;
+
+/// Start a scroll mode session on the foreground window, or explain why
+/// not.
+#[cfg(windows)]
+fn start_scroll(
+    config: &Config,
+    main_thread_id: u32,
+    indicator: &mut Option<Indicator>,
+) -> Option<ScrollSession> {
+    if indicator.is_none() {
+        match Indicator::new() {
+            Ok(i) => *indicator = Some(i),
+            Err(e) => tracing::warn!(error = ?e, "scroll indicator unavailable"),
+        }
+    }
+    let chord = |s: &str| jumpkey::windows::hotkey::chord_from_str(s).ok();
+    let chords = Chords {
+        scroll: chord(&config.hotkeys.scroll_mode),
+        pick_element: chord(&config.hotkeys.pick_element),
+        pick_window: chord(&config.hotkeys.pick_window),
+        open_settings: chord(&config.hotkeys.open_settings),
+    };
+    match ScrollSession::start(
+        chords,
+        config.scroll.motion(),
+        main_thread_id,
+        WM_USER_SCROLL,
+    ) {
+        Ok(s) => Some(s),
+        Err(StartError::NoTarget) => None,
+        Err(StartError::Elevated) => {
+            notification::info(
+                "Scroll mode",
+                "Scroll mode doesn't work in windows running as administrator.",
+            );
+            None
+        }
+        Err(StartError::Failed(e)) => {
+            tracing::error!(error = ?e, "scroll mode failed to start");
+            notification::error("jumpkey: scroll mode failed", &format!("{e}"));
+            None
+        }
     }
 }
 

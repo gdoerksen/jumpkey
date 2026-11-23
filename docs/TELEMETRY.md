@@ -98,6 +98,21 @@ fully handled (after the action ran, or after Esc).
 | `process_cpu_cycles` | CPU used by all of jumpkey's threads during the press (includes the parallel walk workers). |
 | `private_bytes_before`, `private_bytes_after` | jumpkey's private memory at start and end. |
 
+### `scroll`
+
+One per scroll mode session, written when it ends. Same envelope as
+`pick` (`trace_id`, `dur_us`, `cpu_cycles` …), no child spans or
+milestones. Attributes:
+
+| Field | Meaning |
+|---|---|
+| `areas` | Scrollable areas offered (after filtering, at most 9). Absent if discovery hadn't finished. |
+| `discover_ms` | Time to find all areas (`FindAll` on a worker). |
+| `first_from` | Where the instant first area came from: `point` (under the cursor), `focus` (the focused element) or `window` (no scrollable element; the client area). |
+| `keys` | Scroll keys pressed: `h j k l` presses, jumps and area switches. |
+| `duration_ms` | How long scroll mode was on. |
+| `exit_by` | How it ended: `esc`, `hotkey`, `click`, `unused_keys` (three unused keys in a row), `foreground` (another window came to the front), `pick` / `settings` (that hotkey was pressed), `lock` (session locked or the desktop switched). |
+
 ### Spans
 
 | Span | What it covers | Attributes |

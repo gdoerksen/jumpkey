@@ -40,6 +40,55 @@ pub struct Config {
     pub performance: PerformanceConfig,
     /// Keyboard layout and board shape.
     pub keyboard: KeyboardConfig,
+    /// Scroll mode feel (#54). Config-file only; hot-reloaded.
+    pub scroll: ScrollConfig,
+}
+
+/// Scroll mode tuning (`[scroll]`). Distances are in lines, converted
+/// through the Windows "lines per wheel notch" setting so scroll mode
+/// feels like the user's own mouse wheel. Out-of-range values are
+/// clamped when applied ([`crate::scroll::MotionConfig::clamped`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ScrollConfig {
+    /// Lines one tap of `h j k l` scrolls. Default `3` (one wheel notch
+    /// at the Windows default).
+    pub step: u32,
+    /// Glide speed while a key is held, lines per second. Default `40`.
+    pub speed: u32,
+    /// Shift multiplies step and speed by this. Default `3`.
+    pub fast_multiplier: u32,
+    /// A key held this long (ms) starts gliding. Default `150`.
+    pub hold_ms: u32,
+    /// Time (ms) to ramp up to full glide speed. Default `150`.
+    pub ramp_ms: u32,
+}
+
+impl Default for ScrollConfig {
+    fn default() -> Self {
+        Self {
+            step: 3,
+            speed: 40,
+            fast_multiplier: 3,
+            hold_ms: 150,
+            ramp_ms: 150,
+        }
+    }
+}
+
+impl ScrollConfig {
+    /// The motion tuning this config describes (clamped).
+    pub fn motion(&self) -> crate::scroll::MotionConfig {
+        crate::scroll::MotionConfig {
+            step: self.step as f64,
+            speed: self.speed as f64,
+            fast_multiplier: self.fast_multiplier as f64,
+            hold_ms: self.hold_ms as f64,
+            ramp_ms: self.ramp_ms as f64,
+            ..crate::scroll::MotionConfig::default()
+        }
+        .clamped()
+    }
 }
 
 /// Physical keyboard settings. Alphabet presets resolve through the
@@ -66,6 +115,8 @@ pub struct HotkeyBindings {
     pub pick_window: String,
     /// Open settings dialog. Default: `Ctrl+Shift+,`.
     pub open_settings: String,
+    /// Toggle scroll mode (#54). Default: `Ctrl+Alt+J`.
+    pub scroll_mode: String,
 }
 
 impl Default for HotkeyBindings {
@@ -74,6 +125,7 @@ impl Default for HotkeyBindings {
             pick_element: "Ctrl+Shift+Space".to_string(),
             pick_window: "Ctrl+Alt+Space".to_string(),
             open_settings: "Ctrl+Shift+,".to_string(),
+            scroll_mode: "Ctrl+Alt+J".to_string(),
         }
     }
 }
@@ -447,6 +499,22 @@ mod tests {
         assert_eq!(cfg.scope.max_elements, 300);
         assert!(cfg.performance.enable_caching);
         assert_eq!(cfg.performance.cache_ttl_ms, 500);
+    }
+
+    #[test]
+    fn scroll_section_defaults_and_parses() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.hotkeys.scroll_mode, "Ctrl+Alt+J");
+        assert_eq!(cfg.scroll, ScrollConfig::default());
+        let cfg: Config = toml::from_str("[scroll]\nspeed = 80\n").unwrap();
+        assert_eq!(cfg.scroll.speed, 80);
+        assert_eq!(cfg.scroll.step, 3);
+        let m = ScrollConfig {
+            speed: 0,
+            ..ScrollConfig::default()
+        }
+        .motion();
+        assert!(m.speed >= 1.0, "clamped");
     }
 
     #[test]

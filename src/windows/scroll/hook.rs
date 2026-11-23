@@ -40,23 +40,24 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN,
-    VK_SHIFT,
+    KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LCONTROL, VK_LSHIFT,
+    VK_LWIN, VK_MENU, VK_RCONTROL, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    PeekMessageW, PostThreadMessageW, RegisterClassExW, SetWindowsHookExW, TranslateMessage,
-    UnhookWindowsHookEx, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND, HC_ACTION, HHOOK,
-    KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
-    WM_APP, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN,
-    WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WNDCLASSEXW, WS_POPUP, WTS_CONSOLE_DISCONNECT,
-    WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetAncestor,
+    GetMessageW, PeekMessageW, PostThreadMessageW, RegisterClassExW, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, EVENT_SYSTEM_DESKTOPSWITCH, EVENT_SYSTEM_FOREGROUND,
+    GA_ROOT, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_EXTENDED, LLMHF_INJECTED, MSG,
+    MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_EX_STYLE,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
+    WM_MOUSEMOVE, WM_QUIT, WM_RBUTTONDOWN, WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WNDCLASSEXW,
+    WS_POPUP, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
 };
 
 use crate::input::{Key, KeyEvent, KeyTracker, Mods, NamedKey};
 use crate::scroll::{Area, Chords, Effect, ExitReason, ScrollMode, Verdict};
 use crate::windows::keyboard_layout::{is_key_down, key_from_ll};
+use crate::windows::scroll::engine::{RealMods, MOD_LCTRL, MOD_LSHIFT, MOD_RCTRL, MOD_RSHIFT};
 use crate::windows::JUMPKEY_INPUT_TAG;
 
 /// Thread message to the hook thread: a [`Command`] is waiting.
@@ -91,6 +92,7 @@ enum Command {
 /// joins the thread.
 pub struct ScrollHook {
     thread_id: u32,
+    real_mods: RealMods,
     commands: Sender<Command>,
     effects: Receiver<Effect>,
     user_moved_pointer: Arc<AtomicBool>,
@@ -106,6 +108,8 @@ impl ScrollHook {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<u32>>();
         let moved = Arc::new(AtomicBool::new(false));
         let moved_thread = Arc::clone(&moved);
+        let real_mods: RealMods = Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let real_thread = Arc::clone(&real_mods);
         // HWND isn't Send; carry the raw value.
         let fg = cfg.foreground.0 as isize;
         let (chords, main_tid, wake) = (cfg.chords, cfg.main_thread_id, cfg.wake_message);
@@ -119,6 +123,7 @@ impl ScrollHook {
                     wake,
                     foreground: fg,
                     user_moved_pointer: moved_thread,
+                    real_mods: real_thread,
                 };
                 thread_main(setup, cmd_rx, ready_tx);
             })
@@ -136,6 +141,7 @@ impl ScrollHook {
         };
         Ok(Self {
             thread_id,
+            real_mods,
             commands: cmd_tx,
             effects: fx_rx,
             user_moved_pointer: moved,
@@ -157,6 +163,12 @@ impl ScrollHook {
     /// The resulting `Exit` effect arrives through [`Self::drain`].
     pub fn exit(&self, reason: ExitReason) {
         self.send(Command::Exit(reason));
+    }
+
+    /// The physically held Shift / Ctrl sides, kept up to date by the hook
+    /// (for the engine).
+    pub fn real_mods(&self) -> RealMods {
+        Arc::clone(&self.real_mods)
     }
 
     /// True once the user moved the mouse during the session (physical
@@ -206,6 +218,7 @@ struct Setup {
     wake: u32,
     foreground: isize,
     user_moved_pointer: Arc<AtomicBool>,
+    real_mods: RealMods,
 }
 
 impl Setup {
@@ -240,6 +253,14 @@ impl Setup {
                 mode.seed_held_key(key);
             }
         }
+        let down = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(vk.0 as i32) } < 0;
+        let mut bits = 0u8;
+        for (vk, bit) in MOD_SIDES {
+            if down(vk) {
+                bits |= bit;
+            }
+        }
+        self.real_mods.store(bits, Ordering::Release);
         HookState {
             mode,
             tracker,
@@ -248,9 +269,18 @@ impl Setup {
             wake: self.wake,
             foreground: self.foreground,
             user_moved_pointer: self.user_moved_pointer,
+            real_mods: self.real_mods,
         }
     }
 }
+
+/// Side-specific Shift / Ctrl virtual keys and their [`RealMods`] bits.
+const MOD_SIDES: [(VIRTUAL_KEY, u8); 4] = [
+    (VK_LSHIFT, MOD_LSHIFT),
+    (VK_RSHIFT, MOD_RSHIFT),
+    (VK_LCONTROL, MOD_LCTRL),
+    (VK_RCONTROL, MOD_RCTRL),
+];
 
 struct HookState {
     mode: ScrollMode,
@@ -260,6 +290,7 @@ struct HookState {
     wake: u32,
     foreground: isize,
     user_moved_pointer: Arc<AtomicBool>,
+    real_mods: RealMods,
 }
 
 impl HookState {
@@ -439,10 +470,23 @@ unsafe extern "system" fn win_event_proc(
     with_state(|s| {
         if event == EVENT_SYSTEM_DESKTOPSWITCH {
             s.exit(ExitReason::Lock);
-        } else if event == EVENT_SYSTEM_FOREGROUND && hwnd.0 as isize != s.foreground {
+        } else if event == EVENT_SYSTEM_FOREGROUND && !same_top_level(hwnd, s.foreground) {
+            tracing::debug!("scroll: another window came to the foreground");
             s.exit(ExitReason::Foreground);
         }
     });
+}
+
+/// True when `hwnd` is `target` or one of its child windows. Chromium
+/// raises `EVENT_SYSTEM_FOREGROUND` for its page child window
+/// (`Chrome_RenderWidgetHostHWND`) when a ScrollPattern jump runs; that
+/// isn't the user switching windows (found in the live test).
+fn same_top_level(hwnd: HWND, target: isize) -> bool {
+    if hwnd.0 as isize == target {
+        return true;
+    }
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    !root.0.is_null() && root.0 as isize == target
 }
 
 /// One tagged keyboard event.
@@ -487,6 +531,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         if info.dwExtraInfo != JUMPKEY_INPUT_TAG {
             let swallow = with_state(|s| {
                 let (key, down) = key_from_ll(info);
+                if let Some(&(_, bit)) = MOD_SIDES.iter().find(|(vk, _)| vk.0 as u32 == info.vkCode)
+                {
+                    if down {
+                        s.real_mods.fetch_or(bit, Ordering::Release);
+                    } else {
+                        s.real_mods.fetch_and(!bit, Ordering::Release);
+                    }
+                }
                 let ev: KeyEvent = s.tracker.track(key, down);
                 let (verdict, mut fx) = s.mode.on_key(ev);
                 let mask = fx.contains(&Effect::MaskAlt);

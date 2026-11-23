@@ -2,8 +2,14 @@
 //! are platform-free in [`crate::scroll`]; this module owns the OS side.
 //!
 //! - [`hook`]: the dedicated keyboard and mouse hook thread.
-//!
-//! Area discovery, the scroll engine and the indicator come with the
-//! feature PR (roadmap step 5, part 2).
+//! - [`areas`]: finding scrollable areas with UI Automation.
+//! - [`engine`]: the worker that turns motion into tagged wheel input and
+//!   runs jumps.
+//! - [`indicator`]: the click-through outline and digit badges.
+//! - [`session`]: one session, driven from the main loop.
 
+pub mod areas;
+pub mod engine;
 pub mod hook;
+pub mod indicator;
+pub mod session;

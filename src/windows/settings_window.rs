@@ -105,7 +105,7 @@ use crate::windows::{hotkey, keyboard_layout, notification, overlay, startup};
 // ──────────────────── Layout constants ────────────────────
 
 const WINDOW_W: i32 = 860;
-const WINDOW_H: i32 = 680;
+const WINDOW_H: i32 = 712;
 const PADDING: i32 = 14;
 
 /// Standard row height (control + 4px gap). Trackbars and color
@@ -171,6 +171,7 @@ const ID_CONSECUTIVE_KEYS: usize = 1027;
 const ID_BADGE_SHAPE: usize = 1028;
 const ID_ELEMENT_FONT_AUTO: usize = 1029;
 const ID_WINDOW_FONT_AUTO: usize = 1030;
+const ID_SCROLL_MODE: usize = 1031;
 
 /// Element badge shape choices, in combo order: (config value, label).
 const BADGE_SHAPE_OPTIONS: [(overlay::BadgeShape, &str); 2] = [
@@ -260,6 +261,7 @@ struct State {
     pick_element: HWND,
     pick_window: HWND,
     open_settings: HWND,
+    scroll_mode: HWND,
     alphabet: HWND,
     hint_strategy: HWND,
     hint_order: HWND,
@@ -297,6 +299,8 @@ struct State {
     /// show_leader / shape) survive, and untouched controls keep the
     /// file's value (e.g. `None` / `""` / `0` = preset default).
     initial_colors: ColorConfig,
+    /// `[scroll]` isn't edited here; Save carries it through unchanged.
+    initial_scroll: crate::config::ScrollConfig,
     /// `Some(_)` once the user clicks Save (or Reset to Defaults) and
     /// the resulting [`Config`] has been written to disk. Surfaced to
     /// [`show`] so the caller can hot-apply without re-reading the file.
@@ -449,6 +453,7 @@ mod tips {
         "Global hotkey to switch between top-level windows.\n\nSame chord syntax as Pick element.";
     pub const OPEN_SETTINGS: &str =
         "Global hotkey to open this settings window.\n\nSame chord syntax as Pick element.";
+    pub const SCROLL_MODE: &str = "Global hotkey to turn scroll mode on and off.\n\nIn scroll mode: h j k l scroll (hold to glide, Shift for fast), d / u half a page, g g / G top / bottom, Tab or 1-9 switch area, Esc exits. Speed is set in config.toml under [scroll].\n\nSame chord syntax as Pick element.";
     pub const STRATEGY: &str = "How hint labels are allocated.\n\n• Shortest first — minimizes average keystrokes (Vimium-style).\n• Fixed length — every label has the same length; predictable but longer.";
     pub const ORDER: &str = "Where the shortest (one-key) hints are placed.\n\n• Center of window — labels radiate out from the middle of the window, where your eyes usually are.\n• Mouse cursor — labels radiate out from the pointer.\n• Reading order — top-left first (the previous behaviour).";
     pub const PRESET: &str = "Built-in alphabet preset. Keys follow your keyboard layout (e.g. the home row is aoeuidhtn on Dvorak) and are ordered strongest finger first — index, middle, ring, pinky, then sideways stretches; home row before top and bottom rows — so the closest targets get the easiest keys (f, j… on QWERTY). Custom additions keep the order you type them.\n\n• Home row — the default; minimal hand travel.\n• Home row + extended — adds ; ' for 11 keys.\n• Alphanumeric — letters + digits, 36 keys.\n• Letters only — full A-Z.\n• Custom — uses the Custom alphabet field below verbatim.";
@@ -560,6 +565,19 @@ unsafe fn build_controls(hwnd: HWND, hinstance: HINSTANCE, initial: &Config) {
         LEFT_FIELD_W,
     );
     add_tip(tooltip, hwnd, open_settings, tips::OPEN_SETTINGS);
+    y += ROW_H;
+
+    create_label(hwnd, hinstance, "Scroll mode:", LEFT_LABEL_X, y);
+    let scroll_mode = create_edit(
+        hwnd,
+        hinstance,
+        &initial.hotkeys.scroll_mode,
+        ID_SCROLL_MODE,
+        LEFT_FIELD_X,
+        y,
+        LEFT_FIELD_W,
+    );
+    add_tip(tooltip, hwnd, scroll_mode, tips::SCROLL_MODE);
     y += ROW_H + SECTION_GAP;
 
     create_section(
@@ -1110,6 +1128,7 @@ unsafe fn build_controls(hwnd: HWND, hinstance: HINSTANCE, initial: &Config) {
         pick_element,
         pick_window,
         open_settings,
+        scroll_mode,
         alphabet,
         hint_strategy,
         hint_order,
@@ -1139,6 +1158,7 @@ unsafe fn build_controls(hwnd: HWND, hinstance: HINSTANCE, initial: &Config) {
         window_font_auto,
         launch_startup,
         initial_colors: initial.colors.clone(),
+        initial_scroll: initial.scroll,
         saved_config: None,
     });
     STATE.with(|s| *s.borrow_mut() = Some(state));
@@ -1842,6 +1862,7 @@ fn collect_config() -> Option<(Config, bool)> {
         let pick_element = unsafe { read_text(st.pick_element) };
         let pick_window = unsafe { read_text(st.pick_window) };
         let open_settings = unsafe { read_text(st.open_settings) };
+        let scroll_mode = unsafe { read_text(st.scroll_mode) };
         let alphabet = unsafe { read_text(st.alphabet) };
         let custom_additions = unsafe { read_text(st.custom_additions) };
         let element_bg = unsafe { read_text(st.element_bg) };
@@ -1967,6 +1988,7 @@ fn collect_config() -> Option<(Config, bool)> {
                 pick_element,
                 pick_window,
                 open_settings,
+                scroll_mode,
             },
             hints,
             colors: ColorConfig {
@@ -2000,6 +2022,7 @@ fn collect_config() -> Option<(Config, bool)> {
                 layout: layout_choice,
                 geometry,
             },
+            scroll: st.initial_scroll,
         };
         Some((cfg, launch_startup))
     })
@@ -2078,6 +2101,8 @@ fn validate(cfg: &Config) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Pick window hotkey is invalid:\n  {e}"))?;
     hotkey::parse_hotkey(&cfg.hotkeys.open_settings)
         .map_err(|e| anyhow::anyhow!("Open settings hotkey is invalid:\n  {e}"))?;
+    hotkey::chord_from_str(&cfg.hotkeys.scroll_mode)
+        .map_err(|e| anyhow::anyhow!("Scroll mode hotkey is invalid:\n  {e}"))?;
 
     if cfg.hints.alphabet.trim().is_empty() {
         anyhow::bail!("Hint alphabet must not be empty.");

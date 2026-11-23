@@ -371,6 +371,26 @@ mod schema_tests {
         }
     }
 
+    /// A scroll mode session as `windows::scroll::session` records it.
+    fn fake_scroll() {
+        let span = crate::tel_span!(
+            "scroll",
+            areas = tracing::field::Empty,
+            discover_ms = tracing::field::Empty,
+            first_from = tracing::field::Empty,
+            keys = tracing::field::Empty,
+            duration_ms = tracing::field::Empty,
+            exit_by = tracing::field::Empty
+        );
+        crate::tel_record!(span, "first_from", "point");
+        crate::tel_record!(span, "discover_ms", 38u64);
+        crate::tel_record!(span, "areas", 3u64);
+        crate::tel_record!(span, "keys", 12u64);
+        crate::tel_record!(span, "duration_ms", 4200u64);
+        crate::tel_record!(span, "exit_by", "esc");
+        drop(span);
+    }
+
     #[test]
     fn records_match_the_golden_example() {
         let _lock = pick::TEST_FG_LOCK.lock();
@@ -380,16 +400,21 @@ mod schema_tests {
             fake_pick("element", "picked"); // warm-up: gives the next a "last pick"
             fake_pick("element", "picked");
             fake_pick("window", "cancelled");
+            fake_scroll();
         });
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 4);
         let session = machine::session_record("0123456789abcdef", &SessionInfo::default());
-        let actual = [&session, &lines[1], &lines[2]];
+        let actual = [&session, &lines[1], &lines[2], &lines[3]];
 
         let examples: Vec<Value> = EXAMPLE
             .lines()
             .map(|l| serde_json::from_str(l).expect("schema-example.jsonl must be valid JSON"))
             .collect();
-        assert_eq!(examples.len(), 3, "session, element pick, window pick");
+        assert_eq!(
+            examples.len(),
+            4,
+            "session, element pick, window pick, scroll"
+        );
         let mut errors = Vec::new();
         for (ex, act) in examples.iter().zip(actual) {
             let name = format!(

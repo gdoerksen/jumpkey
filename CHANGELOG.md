@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0] - Unreleased
 
+### Added
+
+- **Scroll mode.** `Ctrl+Alt+J` turns on keyboard scrolling for the window you're using, in the style of Homerow:
+    - **Keys:** `h j k l` scroll. A tap moves one step, the size of a wheel notch; holding a key glides after 150 ms and speeds up smoothly. Shift makes it 3× faster. `d` / `u` scroll half a page, `g g` / `G` go to the top or bottom, and Tab, `1`–`9`, the arrow keys or Ctrl+N/P switch between the window's scrollable areas.
+    - **Leaving:** Esc or the hotkey turns it off. So do a mouse click (the click still goes through), switching windows, locking the PC, and three unused keys in a row.
+    - **What stays the same:** the app keeps focus, so its menus stay open. Ctrl, Alt and Win shortcuts still reach it, and the pointer goes back where it was afterwards.
+    - **Indicator:** a blue outline marks the area being scrolled, with number badges on the others.
+    - **Settings:**
+        - The hotkey is in Settings and the tray menu.
+        - Speed is in a new `[scroll]` section in `config.toml` (`step`, `speed`, `fast_multiplier`, `hold_ms`, `ramp_ms`), applied as soon as you save the file.
+    - **Limits:**
+        - It doesn't work in windows running as administrator.
+        - In Chromium browsers only scroll areas exposed to accessibility tools get a number.
+        - Pressing the hotkey while a menu is open can close the menu. Leaving scroll mode doesn't.
+
 ### Changed
 
 - **Browser presses are 2–5× faster.** jumpkey now fetches a browser window's whole accessibility tree in one call and searches it in memory, instead of asking the browser about each element one at a time. On the benchmark pages in Vivaldi (median, switch then press): a 500-row list 721 → 165 ms, a long feed 1,296 → 243 ms, a form 90 → 53 ms, and the browser itself spends about 4× less CPU on each press. The same labels are found. If the one-call fetch fails, jumpkey falls back to the old way. Known quirk: Vivaldi sometimes reports a few disabled toolbar buttons (back/forward on a fresh tab) as enabled in the one-call fetch, so they can get labels that do nothing.

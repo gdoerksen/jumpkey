@@ -46,6 +46,7 @@ pub struct Tray {
 struct TrayItems {
     pick_element: MenuItem,
     pick_window: MenuItem,
+    scroll_mode: MenuItem,
     _about: MenuItem,
     settings: MenuItem,
     _view_log: Option<MenuItem>,
@@ -64,6 +65,8 @@ impl Tray {
         );
         let pick_window =
             MenuItem::new(format!("Pick window\t{}", hotkeys.pick_window), false, None);
+        let scroll_mode =
+            MenuItem::new(format!("Scroll mode\t{}", hotkeys.scroll_mode), false, None);
         let about = MenuItem::new(concat!("jumpkey v", env!("CARGO_PKG_VERSION")), false, None);
         let settings = MenuItem::new(
             format!("Settings...\t{}", hotkeys.open_settings),
@@ -86,6 +89,8 @@ impl Tray {
             .context("appending Pick element item")?;
         menu.append(&pick_window)
             .context("appending Pick window item")?;
+        menu.append(&scroll_mode)
+            .context("appending Scroll mode item")?;
         menu.append(&PredefinedMenuItem::separator())
             .context("appending separator")?;
         menu.append(&settings).context("appending Settings item")?;
@@ -126,6 +131,7 @@ impl Tray {
             items: TrayItems {
                 pick_element,
                 pick_window,
+                scroll_mode,
                 _about: about,
                 settings,
                 _view_log: view_log,
@@ -143,6 +149,9 @@ impl Tray {
         self.items
             .pick_window
             .set_text(format!("Pick window\t{}", hotkeys.pick_window));
+        self.items
+            .scroll_mode
+            .set_text(format!("Scroll mode\t{}", hotkeys.scroll_mode));
         self.items
             .settings
             .set_text(format!("Settings...\t{}", hotkeys.open_settings));
