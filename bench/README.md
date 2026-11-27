@@ -42,8 +42,17 @@ input). Ctrl+C in the console stops it cleanly. Results go to
 - `iterations.jsonl`: one JSON object per line (`kind` = `process_start`,
   `idle`, `iteration`, `process_stop`)
 
-A summary table is printed at the end. Deeper analysis (confidence
-intervals for A/B, budgets) comes with `scripts/telemetry_summary.py`.
+A summary table is printed at the end. For where the time goes inside
+jumpkey (telemetry builds), and A/B confidence intervals:
+
+```powershell
+python scripts\telemetry_summary.py bench\results\<run-id> --compare a b
+```
+
+It joins each press to jumpkey's telemetry record by QPC time and prints
+p50 / p95 per milestone interval (`hotkey -> enum_start`, `enum_start ->
+elements_ready`, … `hotkey -> shown`), per top-level span, and the
+harness's own numbers, per scope / scenario / pattern / build.
 
 ## What's measured
 
@@ -54,6 +63,7 @@ intervals for A/B, budgets) comes with `scripts/telemetry_summary.py`.
 | `jumpkey_cpu_ms` | jumpkey CPU from hotkey to overlay hidden (`QueryProcessCycleTime`, converted with the measured TSC rate). |
 | `target_cpu_ms` | CPU used over the same interval by the target window's process **plus its descendants running the same exe**. Chromium and Electron build the accessibility tree in renderer processes (same exe), so the window's own process isn't enough; other images are left out so the shell `explorer.exe` doesn't pull in every app started from Start, nor VS Code / Terminal their shells. This is the cost jumpkey puts on the app you're using. |
 | `between_*` | Since the previous overlay closed: window switching, dwell time, and what jumpkey did in the background meanwhile (cache warming). |
+| `main_block_us_max` | Longest stretch jumpkey's main thread went without handling a message, hotkey → hidden. A background thread sends `WM_NULL` to jumpkey's hidden IPC window every 5 ms and times each round trip (`--no-probe` turns it off). Today a search on the main thread shows up here; roadmap step 6 moves it to a worker. |
 | `after.*` | jumpkey private bytes, working set, handles, GDI/USER objects after each press. |
 | `idle` record | jumpkey CPU over `--idle-secs` with nobody pressing anything. |
 | `process_start.startup_ms` | Spawn → ready for the first press (splash closed). Slow starts (> 5 s) are also printed. |
@@ -157,6 +167,25 @@ relative to the window, so a moved window still matches), and exits 1
 if anything is missing. The dump is a diagnostic, not part of the bench
 contract below.
 
+## Live correctness checks (`--check`)
+
+The benchmark always cancels with Esc. `--check` types real labels and
+verifies what happened, on `bench/fixtures/check.html` (buttons that
+report clicks in the page title) and on a small Win32 window the harness
+owns (menu bar, popup menu):
+
+```powershell
+cargo build --release --features telemetry; cargo build --release -p pick-bench
+target\release\pick-bench.exe --check --expect bench\check\expected-main.json
+```
+
+Needs a telemetry build (it reads the labels file, contract item 7) and
+Vivaldi. Each case runs `--repeat` times (default 10) and passes only if
+every repetition does; `--case <name>` runs one. `--expect` compares
+with a file of known results and exits non-zero if any differ. The cases
+and what they verify are listed in `bench/check/README.md`. Results go to
+`bench/results/<run-id>-check/check.jsonl`.
+
 ## Getting stable numbers
 
 - Plug in and use a High performance / Best performance power plan.
@@ -195,6 +224,13 @@ Changing one means updating pick-bench in the same PR:
    records with the run id; `JUMPKEY_BENCH_DWMFLUSH=1` makes jumpkey wait
    for the compositor after showing the overlay, to time "pixels on
    screen". Other builds ignore both.
+7. Telemetry builds only: with `JUMPKEY_BENCH_LABELS=<file>`, jumpkey
+   appends one JSON line per shown pick, `{"seq", "labels": [{"label",
+   "rect": [x, y, w, h]}]}` (physical pixels, no names), written before
+   the overlay is shown. `--check` uses it to know which label to type.
+8. The hidden IPC window (`jumpkey --close` finds it by class
+   `JumpkeyIpcWindowClass_v1`) belongs to the main thread; the
+   responsiveness probe sends it `WM_NULL`.
 
 Also assumed: jumpkey shows a window (the splash) while it starts and
 takes hotkeys once that's gone. pick-bench waits for a window to appear

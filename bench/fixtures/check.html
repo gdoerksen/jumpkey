@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>chk</title>
+<!--
+  pick-bench `check` mode fixture. Every event the checks care about is
+  written into the page title as `chk|key=value|…`, which the harness
+  reads from the window title (this page's title only; never any other
+  window's). Fields:
+    last    kind:id of the last action (click, dbl, ctx)
+    n       number of actions so far
+    keys    non-modifier keys that reached the page (a leak if a pick
+            should have swallowed them)
+    esc     Esc presses that reached the page
+    scroll  scroll events seen
+    pos     where the "mover" button is (A or B)
+-->
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 20px; }
+  #keys { width: 240px; margin-bottom: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(6, 150px); gap: 18px 24px; }
+  .grid button { height: 44px; }
+  #pad { height: 120px; margin-top: 24px; background: #eef; display: flex;
+         align-items: center; justify-content: center; color: #557; }
+  .row { display: flex; gap: 24px; align-items: flex-start; margin-top: 16px; }
+  #scroller { height: 160px; width: 300px; overflow: auto; border: 1px solid #888; }
+  #stage { position: relative; height: 60px; width: 600px; }
+  #mover { position: absolute; top: 10px; height: 40px; width: 120px; }
+</style>
+</head>
+<body>
+<input id="keys" autofocus placeholder="keys typed here count as leaks">
+<div class="grid" id="grid"></div>
+<div id="pad" role="region" aria-label="pad">empty area</div>
+<div class="row">
+  <select id="sel"><option>one</option><option>two</option><option>three</option></select>
+  <div id="scroller" role="region" aria-label="scroller"><div style="height: 2000px">tall content</div></div>
+  <div id="stage"><button id="mover">mover</button></div>
+</div>
+<script>
+  const st = { last: 'none', n: 0, keys: 0, esc: 0, scroll: 0, pos: 'A' };
+  function show() {
+    document.title = `chk|last=${st.last}|n=${st.n}|keys=${st.keys}|esc=${st.esc}` +
+      `|scroll=${st.scroll}|pos=${st.pos}`;
+  }
+  function rec(kind, id) { st.last = kind + ':' + id; st.n++; show(); }
+  function wire(el, id) {
+    el.addEventListener('click', () => rec('click', id));
+    el.addEventListener('dblclick', () => rec('dbl', id));
+    el.addEventListener('contextmenu', e => { e.preventDefault(); rec('ctx', id); });
+  }
+  const grid = document.getElementById('grid');
+  for (let i = 1; i <= 30; i++) {
+    const id = 'btn-' + String(i).padStart(2, '0');
+    const b = document.createElement('button');
+    b.id = id;
+    b.textContent = 'Button ' + i;
+    wire(b, id);
+    grid.appendChild(b);
+  }
+  document.getElementById('pad').addEventListener('click', () => rec('click', 'pad'));
+  wire(document.getElementById('mover'), 'mover');
+  document.addEventListener('keydown', e => {
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+    if (e.key === 'Escape') st.esc++; else st.keys++;
+    show();
+  }, true);
+  const onScroll = () => { st.scroll++; show(); };
+  window.addEventListener('scroll', onScroll);
+  document.getElementById('scroller').addEventListener('scroll', onScroll);
+  // The mover jumps between two spots, for the pre-action check (#22).
+  const mover = document.getElementById('mover');
+  function place() { mover.style.left = st.pos === 'A' ? '0px' : '360px'; }
+  setInterval(() => { st.pos = st.pos === 'A' ? 'B' : 'A'; place(); show(); }, 1500);
+  place();
+  show();
+</script>
+</body>
+</html>

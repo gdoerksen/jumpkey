@@ -8,6 +8,8 @@
 //! The contract it relies on is documented in `bench/README.md`.
 
 #[cfg(windows)]
+mod check;
+#[cfg(windows)]
 mod cli;
 #[cfg(windows)]
 mod jumpkey;
@@ -24,7 +26,11 @@ mod win;
 fn main() -> std::process::ExitCode {
     match cli::parse() {
         Ok(None) => std::process::ExitCode::SUCCESS,
-        Ok(Some(opts)) => match run::run(opts) {
+        Ok(Some(opts)) => match if opts.check_mode {
+            check::run(opts)
+        } else {
+            run::run(opts)
+        } {
             Ok(()) => std::process::ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("pick-bench: {e:#}");

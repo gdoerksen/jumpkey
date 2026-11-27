@@ -172,6 +172,80 @@ pub fn tap_alt() -> Result<()> {
     tap(VK_MENU.0)
 }
 
+/// Press or release one key.
+pub fn key(vk: u16, up: bool) -> Result<()> {
+    send(&[key_input(vk, up)])
+}
+
+/// The virtual key that types `c` on the current layout (unshifted).
+pub fn vk_for_char(c: char) -> Option<u16> {
+    let mut buf = [0u16; 2];
+    let unit = c.encode_utf16(&mut buf).first().copied()?;
+    // SAFETY: plain layout lookup.
+    let r = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW(unit) };
+    (r != -1).then_some((r as u16) & 0xFF)
+}
+
+/// Type `text` key by key (each char tapped with its unshifted key).
+pub fn type_text(text: &str) -> Result<()> {
+    for c in text.chars() {
+        let vk = vk_for_char(c).with_context(|| format!("no key types `{c}`"))?;
+        tap(vk)?;
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    Ok(())
+}
+
+fn mouse_input(flags: u32, data: i32) -> INPUT {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT_MOUSE, MOUSEINPUT, MOUSE_EVENT_FLAGS};
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: data as u32,
+                dwFlags: MOUSE_EVENT_FLAGS(flags),
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// Move the pointer to `(x, y)` (physical screen pixels).
+pub fn move_pointer(x: i32, y: i32) -> Result<()> {
+    // SAFETY: plain pointer move.
+    unsafe { windows::Win32::UI::WindowsAndMessaging::SetCursorPos(x, y)? };
+    Ok(())
+}
+
+/// Left click at `(x, y)`.
+pub fn click_at(x: i32, y: i32) -> Result<()> {
+    move_pointer(x, y)?;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    // MOUSEEVENTF_LEFTDOWN / LEFTUP
+    send(&[mouse_input(0x0002, 0), mouse_input(0x0004, 0)])
+}
+
+/// One wheel notch (down) at `(x, y)`.
+pub fn wheel_at(x: i32, y: i32) -> Result<()> {
+    move_pointer(x, y)?;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    // MOUSEEVENTF_WHEEL, one notch towards the user.
+    send(&[mouse_input(0x0800, -120)])
+}
+
+/// Current pointer position.
+pub fn pointer() -> (i32, i32) {
+    let mut p = windows::Win32::Foundation::POINT::default();
+    // SAFETY: valid out-pointer.
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p);
+    }
+    (p.x, p.y)
+}
+
 fn send(inputs: &[INPUT]) -> Result<()> {
     // SAFETY: slice of fully-initialized INPUT structs; size is correct.
     let sent = unsafe { SendInput(inputs, std::mem::size_of::<INPUT>() as i32) };

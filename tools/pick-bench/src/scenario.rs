@@ -63,6 +63,9 @@ pub struct Scenario {
     /// Close the window afterwards (only if the harness opened it).
     #[serde(default = "yes")]
     pub close: bool,
+    /// Used by `--check` only; `--all` and `--preset baseline` skip it.
+    #[serde(default)]
+    pub check_only: bool,
 }
 
 fn yes() -> bool {

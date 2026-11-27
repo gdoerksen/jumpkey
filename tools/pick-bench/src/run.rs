@@ -22,6 +22,7 @@ use crate::stats::summarize;
 use crate::win::clock::{cycles_to_ms, qpc, qpc_delta_us};
 use crate::win::events::{self, pump_sleep, pump_until, pump_until_every};
 use crate::win::input::{self, Chord};
+use crate::win::probe::{Probe, ProbeResult};
 use crate::win::process::{self, cycles_delta, pids_of_exe, process_tree, ProcGroup};
 use crate::win::window::{self, NeutralWindow};
 use crate::win::{self as w, machine};
@@ -53,7 +54,7 @@ const SLOW_POLL: Duration = Duration::from_millis(100);
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-fn install_ctrl_c() {
+pub(crate) fn install_ctrl_c() {
     use windows::Win32::Foundation::BOOL;
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
     unsafe extern "system" fn handler(_: u32) -> BOOL {
@@ -65,7 +66,7 @@ fn install_ctrl_c() {
     }
 }
 
-fn check_stop() -> Result<()> {
+pub(crate) fn check_stop() -> Result<()> {
     if STOP.load(Ordering::SeqCst) {
         bail!("interrupted (Ctrl+C)");
     }
@@ -86,17 +87,17 @@ struct Ctx {
     slow_startups: Vec<(String, String, String, f64)>,
 }
 
-struct Target {
-    name: String,
-    hwnd: isize,
-    opened_by_us: bool,
-    root_pid: u32,
-    close: bool,
+pub(crate) struct Target {
+    pub name: String,
+    pub hwnd: isize,
+    pub opened_by_us: bool,
+    pub root_pid: u32,
+    pub close: bool,
     /// Throwaway browser profile to delete once the window is closed.
-    profile: Option<PathBuf>,
+    pub profile: Option<PathBuf>,
     /// The browser instance started for that profile (its own process
     /// tree), safe to end if it doesn't exit after the window closes.
-    owned_instance: Option<u32>,
+    pub owned_instance: Option<u32>,
 }
 
 pub fn run(opts: Options) -> Result<()> {
@@ -189,7 +190,12 @@ pub fn run(opts: Options) -> Result<()> {
     let scenario_names: Vec<String> = if opts.manual {
         vec!["manual".into()]
     } else if opts.all_scenarios {
-        scenarios.scenarios.iter().map(|s| s.name.clone()).collect()
+        scenarios
+            .scenarios
+            .iter()
+            .filter(|s| !s.check_only)
+            .map(|s| s.name.clone())
+            .collect()
     } else {
         for n in &opts.scenarios {
             scenarios.get(n)?;
@@ -340,33 +346,42 @@ fn run_matrix(
                 }
                 Ok(())
             })();
-            if target.opened_by_us && target.close && !ctx.opts.keep_open {
-                window::close(target.hwnd);
-                pump_sleep(Duration::from_millis(500));
-                if let Some(pid) = target.owned_instance {
-                    // Fresh-profile Vivaldi asks "Confirm exit" when its
-                    // last window closes, and would sit there forever.
-                    // This instance only exists for the benchmark, so end
-                    // it if it hasn't quit on its own.
-                    if !pump_until_every(Duration::from_secs(5), SLOW_POLL, || {
-                        !process::is_alive(pid)
-                    }) {
-                        process::kill_tree(pid);
-                    }
-                }
-                if let Some(dir) = &target.profile {
-                    // The browser holds files until all its processes exit,
-                    // which can take a while; anything left is removed by
-                    // the sweep at the end of the run.
-                    pump_until_every(Duration::from_secs(15), SLOW_POLL, || {
-                        std::fs::remove_dir_all(dir).is_ok() || !dir.exists()
-                    });
-                }
+            if !ctx.opts.keep_open {
+                close_target(&target);
             }
             result?;
         }
     }
     Ok(())
+}
+
+/// Close a target window the harness opened (and end its throwaway
+/// browser instance, and delete its profile).
+pub(crate) fn close_target(target: &Target) {
+    if !(target.opened_by_us && target.close) {
+        return;
+    }
+    window::close(target.hwnd);
+    pump_sleep(Duration::from_millis(500));
+    if let Some(pid) = target.owned_instance {
+        // Fresh-profile Vivaldi asks "Confirm exit" when its
+        // last window closes, and would sit there forever.
+        // This instance only exists for the benchmark, so end
+        // it if it hasn't quit on its own.
+        if !pump_until_every(Duration::from_secs(5), SLOW_POLL, || {
+            !process::is_alive(pid)
+        }) {
+            process::kill_tree(pid);
+        }
+    }
+    if let Some(dir) = &target.profile {
+        // The browser holds files until all its processes exit,
+        // which can take a while; anything left is removed by
+        // the sweep at the end of the run.
+        pump_until_every(Duration::from_secs(15), SLOW_POLL, || {
+            std::fs::remove_dir_all(dir).is_ok() || !dir.exists()
+        });
+    }
 }
 
 fn run_pattern(
@@ -470,7 +485,8 @@ fn run_block(
         let mut first_attempts = 0;
         let (first, first_visible_qpc) = loop {
             first_attempts += 1;
-            let press = press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms)?;
+            let press =
+                press_and_dismiss(&mut jk, chord, FIRST_PRESS_TIMEOUT, ctx.opts.hold_ms, false)?;
             if let Some(v) = press.visible_qpc {
                 break (press, v);
             }
@@ -560,7 +576,13 @@ fn run_block(
             };
             let between_t = cycles_delta(&last_target, &t_before);
 
-            let p = press_and_dismiss(&mut jk, chord, VISIBLE_TIMEOUT, ctx.opts.hold_ms)?;
+            let p = press_and_dismiss(
+                &mut jk,
+                chord,
+                VISIBLE_TIMEOUT,
+                ctx.opts.hold_ms,
+                ctx.opts.probe,
+            )?;
 
             let jk_after = jk.proc.cycles();
             let t_after = group.cycles();
@@ -586,6 +608,8 @@ fn run_block(
                     .zip(p.foreground_qpc)
                     .map(|(v, f)| qpc_delta_us(v, f)),
                 esc_to_hidden_us: p.esc_qpc.zip(p.hidden_qpc).map(|(e, h)| qpc_delta_us(e, h)),
+                main_block_us_max: p.probe.map(|r| r.max_us),
+                main_probes: p.probe.map(|r| r.count).unwrap_or(0),
                 timed_out: p.visible_qpc.is_none() || p.hidden_qpc.is_none(),
                 focus_retries,
                 qpc_hotkey: p.sent_qpc,
@@ -631,12 +655,13 @@ struct Press {
     foreground_qpc: Option<i64>,
     esc_qpc: Option<i64>,
     hidden_qpc: Option<i64>,
+    probe: Option<ProbeResult>,
 }
 
 /// Close any jumpkey window still showing (a late overlay, or one Esc
 /// didn't close): Esc until none is visible. Errors if it won't go away,
 /// because every later measurement would be wrong.
-fn dismiss_leftover_overlay(jk: &mut Jumpkey) -> Result<()> {
+pub(crate) fn dismiss_leftover_overlay(jk: &mut Jumpkey) -> Result<()> {
     let pid = jk.pid();
     for _ in 0..3 {
         if window::visible_windows_of_pid(pid) == 0 {
@@ -660,8 +685,10 @@ fn press_and_dismiss(
     chord: &Chord,
     timeout: Duration,
     hold_ms: u64,
+    probe: bool,
 ) -> Result<Press> {
     events::clear();
+    let probe = if probe { Probe::start(jk.pid()) } else { None };
     let sent_qpc = qpc();
     input::send_chord(chord)?;
     let Some(shown) = jk.watcher.wait_show(timeout) else {
@@ -677,6 +704,7 @@ fn press_and_dismiss(
             foreground_qpc: None,
             esc_qpc: None,
             hidden_qpc: None,
+            probe: probe.map(Probe::finish),
         });
     };
 
@@ -714,6 +742,7 @@ fn press_and_dismiss(
         foreground_qpc,
         esc_qpc: Some(esc_qpc),
         hidden_qpc: hidden.map(|h| h.qpc),
+        probe: probe.map(Probe::finish),
     })
 }
 
@@ -748,7 +777,7 @@ fn measure_idle(
     })
 }
 
-fn open_target(
+pub(crate) fn open_target(
     sc: &Scenario,
     defaults: &crate::scenario::Defaults,
     ph: &Placeholders,
@@ -851,7 +880,7 @@ fn manual_target(delay_secs: u64) -> Result<Target> {
     })
 }
 
-fn refuse_if_jumpkey_running(builds: &[BuildInfo]) -> Result<()> {
+pub(crate) fn refuse_if_jumpkey_running(builds: &[BuildInfo]) -> Result<()> {
     let mut names: Vec<String> = vec!["jumpkey.exe".into()];
     for b in builds {
         if let Some(n) = b.exe.file_name() {
@@ -873,7 +902,7 @@ fn refuse_if_jumpkey_running(builds: &[BuildInfo]) -> Result<()> {
 }
 
 /// `(name, chord)` for every entry of the template's `[hotkeys]` table.
-fn template_chords(path: &Path) -> Result<Vec<(String, String)>> {
+pub(crate) fn template_chords(path: &Path) -> Result<Vec<(String, String)>> {
     let text = std::fs::read_to_string(path)?;
     let v: toml::Value =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
@@ -889,7 +918,7 @@ fn template_chords(path: &Path) -> Result<Vec<(String, String)>> {
 
 /// Refuse to start if another app already owns any chord the sandboxed
 /// jumpkey will register: jumpkey would show a blocking message box.
-fn check_chords_free(
+pub(crate) fn check_chords_free(
     scopes: &[String],
     template: &dyn Fn(&str) -> PathBuf,
     pressed: &[String],
@@ -922,7 +951,7 @@ fn check_chords_free(
     Ok(())
 }
 
-fn find_repo(explicit: Option<&Path>) -> Result<PathBuf> {
+pub(crate) fn find_repo(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(p.canonicalize()?);
     }
@@ -946,7 +975,7 @@ fn find_repo(explicit: Option<&Path>) -> Result<PathBuf> {
 /// `bench/fixtures/folder/`: 200 small files for the Explorer scenario.
 /// Generated rather than checked in; names are fixed so every machine
 /// gets the same listing.
-fn ensure_fixture_folder(fixtures: &Path) -> Result<()> {
+pub(crate) fn ensure_fixture_folder(fixtures: &Path) -> Result<()> {
     let dir = fixtures.join("folder");
     std::fs::create_dir_all(&dir)?;
     for i in 1..=200 {
@@ -958,7 +987,7 @@ fn ensure_fixture_folder(fixtures: &Path) -> Result<()> {
     Ok(())
 }
 
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
@@ -1010,9 +1039,12 @@ fn print_table(ctx: &Ctx) {
             .or_default()
             .push(it);
     }
-    println!("\nhotkey → visible (ms), CPU per press (ms), jumpkey private bytes (MB)");
     println!(
-        "{:<14} {:<14} {:<22} {:<5} {:>4} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>4}",
+        "\nhotkey → visible (ms), CPU per press (ms), jumpkey private bytes (MB), \
+         longest main-thread stall per press (p50/max, ms)"
+    );
+    println!(
+        "{:<14} {:<14} {:<22} {:<5} {:>4} {:>8} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8} {:>4} {:>15}",
         "scope",
         "scenario",
         "pattern",
@@ -1025,7 +1057,8 @@ fn print_table(ctx: &Ctx) {
         "jk cpu",
         "tgt cpu",
         "priv MB",
-        "t/o"
+        "t/o",
+        "stall p50/max"
     );
     let mut p50s: HashMap<(String, String, String), Vec<(String, f64)>> = HashMap::new();
     for ((scope, scen, pat, build), its) in &groups {
@@ -1041,11 +1074,18 @@ fn print_table(ctx: &Ctx) {
             .max()
             .map(|b| b as f64 / 1_048_576.0);
         let timeouts = its.iter().filter(|i| i.timed_out).count();
+        let stalls: Vec<f64> = its
+            .iter()
+            .filter_map(|i| i.main_block_us_max.map(ms))
+            .collect();
+        let stall = summarize(&stalls)
+            .map(|s| format!("{:.1}/{:.1}", s.p50, s.max))
+            .unwrap_or("-".into());
         let s = summarize(&vis).unwrap_or_default();
         let jk50 = summarize(&jk).map(|s| s.p50);
         let tg50 = summarize(&tg).map(|s| s.p50);
         println!(
-            "{:<14} {:<14} {:<22} {:<5} {:>4} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8} {:>9} {:>8} {:>4}",
+            "{:<14} {:<14} {:<22} {:<5} {:>4} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>8} {:>9} {:>8} {:>4} {:>15}",
             scope,
             scen,
             pat,
@@ -1058,7 +1098,8 @@ fn print_table(ctx: &Ctx) {
             jk50.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
             tg50.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
             priv_mb.map(|v| format!("{v:.1}")).unwrap_or("-".into()),
-            timeouts
+            timeouts,
+            stall
         );
         p50s.entry((scope.clone(), scen.clone(), pat.clone()))
             .or_default()

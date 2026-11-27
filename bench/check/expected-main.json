@@ -1,0 +1,16 @@
+{
+  "pick-click": "pass",
+  "pick-modifiers": "pass",
+  "prefix-backspace": "pass",
+  "esc-cancel": "pass",
+  "focus-kept": "fail",
+  "toggle": "fail",
+  "toggle-during-search": "fail",
+  "rapid-x3": "fail",
+  "wheel-cancel": "pass",
+  "click-cancel": "pass",
+  "foreground-cancel": "pass",
+  "window-pick": "pass",
+  "lone-alt": "pass",
+  "menu-win32": "fail"
+}

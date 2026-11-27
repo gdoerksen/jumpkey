@@ -144,6 +144,16 @@ impl Drop for Watcher {
     }
 }
 
+/// Remove queued events of `kind`; returns how many there were.
+pub fn take(kind: Kind) -> usize {
+    QUEUE.with(|q| {
+        let mut q = q.borrow_mut();
+        let before = q.len();
+        q.retain(|e| e.kind != kind);
+        before - q.len()
+    })
+}
+
 /// Drop any events queued so far (e.g. before pressing the hotkey, so
 /// a stale show can't be mistaken for the overlay).
 pub fn clear() {
