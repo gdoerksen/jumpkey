@@ -1907,6 +1907,8 @@ pub fn pick_hint(hints: Vec<Hint>, style: HintStyle) -> Result<Option<PickResult
     if hints.is_empty() {
         return Ok(None);
     }
+    #[cfg(feature = "telemetry")]
+    super::bench_labels::record(hints.iter().map(|h| (h.label.as_str(), &h.bounds)));
 
     PERSISTENT_OVERLAY.with(|cell| {
         let mut slot = cell.borrow_mut();

@@ -20,6 +20,8 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub struct Sandbox {
     pub appdata: PathBuf,
     pub localappdata: PathBuf,
+    /// Extra environment for jumpkey (e.g. `JUMPKEY_BENCH_LABELS`).
+    pub env: Vec<(&'static str, std::ffi::OsString)>,
 }
 
 impl Sandbox {
@@ -35,6 +37,7 @@ impl Sandbox {
         Ok(Self {
             appdata,
             localappdata,
+            env: Vec::new(),
         })
     }
 
@@ -44,6 +47,9 @@ impl Sandbox {
             .env("JUMPKEY_BENCH_RUN_LABEL", run_label)
             .env("JUMPKEY_BENCH_DWMFLUSH", "1")
             .creation_flags(CREATE_NO_WINDOW);
+        for (k, v) in &self.env {
+            cmd.env(k, v);
+        }
     }
 }
 

@@ -33,6 +33,16 @@ pub struct Options {
     pub keep_open: bool,
     pub press_during_startup: bool,
     pub monitor: Option<String>,
+    /// Time main-thread stalls during each press (see `win::probe`).
+    pub probe: bool,
+    /// `--check`: run the live correctness checks instead of the benchmark.
+    pub check_mode: bool,
+    /// `--case`: only these checks (default: all).
+    pub check: Vec<String>,
+    /// `--repeat`: repetitions per check.
+    pub repeat: usize,
+    /// `--expect`: expected results to compare with.
+    pub expect: Option<PathBuf>,
 }
 
 pub const HELP: &str = "\
@@ -56,6 +66,16 @@ WHAT TO RUN:
     --manual                Benchmark whatever window you focus (no launching)
     --manual-delay <secs>   Seconds to focus the target in --manual mode (default 5)
 
+CHECKS (instead of the benchmark):
+    --check                 Live correctness checks: type real labels on bench/fixtures/check.html
+                            and verify the right element was acted on, no key leaked, focus
+                            stayed, menus stayed open, a second press closed the labels.
+                            Needs a telemetry build (labels file) and Vivaldi.
+    --case <name>           Only this check (repeatable; see bench/check/README.md)
+    --repeat <n>            Repetitions per check (default 10)
+    --expect <file>         Compare with expected results (bench/check/expected-*.json);
+                            exits non-zero when any differ
+
 BUILDS:
     --exe <path>            jumpkey build to test (default: target/release/jumpkey.exe)
     --exe-a <path>          A/B mode: baseline build
@@ -71,6 +91,7 @@ TUNING:
                             scenario rect is relative to that monitor's top-left corner.
                             Monitor numbers are printed at the start of each run.
     --keep-open             Don't close target windows afterwards
+    --no-probe              Don't time jumpkey's main-thread stalls during presses
     --press-during-startup  Make the first press right after jumpkey starts (while the
                             splash is up) instead of waiting until startup is done, as
                             when pressing the hotkey right after launch at login
@@ -108,6 +129,11 @@ pub fn parse() -> Result<Option<Options>> {
         keep_open: false,
         press_during_startup: false,
         monitor: None,
+        probe: true,
+        check_mode: false,
+        check: Vec::new(),
+        repeat: 10,
+        expect: None,
     };
     let mut exe = None;
     let mut exe_a = None;
@@ -150,6 +176,11 @@ pub fn parse() -> Result<Option<Options>> {
             "--keep-open" => o.keep_open = true,
             "--press-during-startup" => o.press_during_startup = true,
             "--monitor" => o.monitor = Some(val()?),
+            "--no-probe" => o.probe = false,
+            "--check" => o.check_mode = true,
+            "--case" => o.check.push(val()?),
+            "--repeat" => o.repeat = val()?.parse()?,
+            "--expect" => o.expect = Some(PathBuf::from(val()?)),
             "--label" => o.label = Some(val()?),
             "--machine-label" => o.machine_label = Some(val()?),
             "--out" => o.out = Some(PathBuf::from(val()?)),
@@ -170,6 +201,18 @@ pub fn parse() -> Result<Option<Options>> {
         (e, None, None) => {
             o.builds = vec![("main".into(), e.unwrap_or_default())];
         }
+    }
+    if o.check_mode {
+        if o.builds.len() != 1 {
+            bail!("--check runs one build (--exe), not A/B");
+        }
+        if o.repeat == 0 {
+            bail!("--repeat must be at least 1");
+        }
+        return Ok(Some(o));
+    }
+    if !o.check.is_empty() || o.expect.is_some() {
+        bail!("--case and --expect need --check");
     }
     if o.iterations == 0 || o.block_size == 0 {
         bail!("--iterations and --block-size must be at least 1");

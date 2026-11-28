@@ -1,0 +1,140 @@
+{"case":"pick-click","rep":0,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":1,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":2,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":3,"pass":true,"detail":"1 chars"}
+{"case":"pick-click","rep":4,"pass":true,"detail":"1 chars"}
+{"case":"pick-click","rep":5,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":6,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":7,"pass":true,"detail":"3 chars"}
+{"case":"pick-click","rep":8,"pass":true,"detail":"2 chars"}
+{"case":"pick-click","rep":9,"pass":true,"detail":"3 chars"}
+{"case":"pick-modifiers","rep":0,"pass":true,"detail":"shift"}
+{"case":"pick-modifiers","rep":1,"pass":true,"detail":"ctrl"}
+{"case":"pick-modifiers","rep":2,"pass":true,"detail":"ctrl+shift"}
+{"case":"pick-modifiers","rep":3,"pass":true,"detail":"shift"}
+{"case":"pick-modifiers","rep":4,"pass":true,"detail":"ctrl"}
+{"case":"pick-modifiers","rep":5,"pass":true,"detail":"ctrl+shift"}
+{"case":"pick-modifiers","rep":6,"pass":true,"detail":"shift"}
+{"case":"pick-modifiers","rep":7,"pass":true,"detail":"ctrl"}
+{"case":"pick-modifiers","rep":8,"pass":true,"detail":"ctrl+shift"}
+{"case":"pick-modifiers","rep":9,"pass":true,"detail":"shift"}
+{"case":"prefix-backspace","rep":0,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":1,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":2,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":3,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":4,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":5,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":6,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":7,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":8,"pass":true,"detail":"prefix then backspace"}
+{"case":"prefix-backspace","rep":9,"pass":true,"detail":"prefix then backspace"}
+{"case":"esc-cancel","rep":0,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":1,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":2,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":3,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":4,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":5,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":6,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":7,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":8,"pass":true,"detail":""}
+{"case":"esc-cancel","rep":9,"pass":true,"detail":""}
+{"case":"focus-kept","rep":0,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":1,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":2,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":3,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":4,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":5,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":6,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":7,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":8,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"focus-kept","rep":9,"pass":false,"detail":"foreground moved to jumpkey while labels showed"}
+{"case":"toggle","rep":0,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":1,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":2,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":3,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":4,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":5,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":6,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":7,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":8,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle","rep":9,"pass":false,"detail":"second press didn't close; a queued pick opened after Esc"}
+{"case":"toggle-during-search","rep":0,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":1,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":2,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":3,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":4,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":5,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":6,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":7,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":8,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"toggle-during-search","rep":9,"pass":false,"detail":"labels still open 2 s after the second press (1 show(s))"}
+{"case":"rapid-x3","rep":0,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":1,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":2,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":3,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":4,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":5,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":6,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":7,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":8,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"rapid-x3","rep":9,"pass":false,"detail":"another pick opened after Esc (queued presses)"}
+{"case":"wheel-cancel","rep":0,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":1,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":2,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":3,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":4,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":5,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":6,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":7,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":8,"pass":true,"detail":""}
+{"case":"wheel-cancel","rep":9,"pass":true,"detail":""}
+{"case":"click-cancel","rep":0,"pass":true,"detail":""}
+{"case":"click-cancel","rep":1,"pass":true,"detail":""}
+{"case":"click-cancel","rep":2,"pass":true,"detail":""}
+{"case":"click-cancel","rep":3,"pass":true,"detail":""}
+{"case":"click-cancel","rep":4,"pass":true,"detail":""}
+{"case":"click-cancel","rep":5,"pass":true,"detail":""}
+{"case":"click-cancel","rep":6,"pass":true,"detail":""}
+{"case":"click-cancel","rep":7,"pass":true,"detail":""}
+{"case":"click-cancel","rep":8,"pass":true,"detail":""}
+{"case":"click-cancel","rep":9,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":0,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":1,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":2,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":3,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":4,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":5,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":6,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":7,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":8,"pass":true,"detail":""}
+{"case":"foreground-cancel","rep":9,"pass":true,"detail":""}
+{"case":"window-pick","rep":0,"pass":true,"detail":""}
+{"case":"window-pick","rep":1,"pass":true,"detail":""}
+{"case":"window-pick","rep":2,"pass":true,"detail":""}
+{"case":"window-pick","rep":3,"pass":true,"detail":""}
+{"case":"window-pick","rep":4,"pass":true,"detail":""}
+{"case":"window-pick","rep":5,"pass":true,"detail":""}
+{"case":"window-pick","rep":6,"pass":true,"detail":""}
+{"case":"window-pick","rep":7,"pass":true,"detail":""}
+{"case":"window-pick","rep":8,"pass":true,"detail":""}
+{"case":"window-pick","rep":9,"pass":true,"detail":""}
+{"case":"lone-alt","rep":0,"pass":true,"detail":""}
+{"case":"lone-alt","rep":1,"pass":true,"detail":""}
+{"case":"lone-alt","rep":2,"pass":true,"detail":""}
+{"case":"lone-alt","rep":3,"pass":true,"detail":""}
+{"case":"lone-alt","rep":4,"pass":true,"detail":""}
+{"case":"lone-alt","rep":5,"pass":true,"detail":""}
+{"case":"lone-alt","rep":6,"pass":true,"detail":""}
+{"case":"lone-alt","rep":7,"pass":true,"detail":""}
+{"case":"lone-alt","rep":8,"pass":true,"detail":""}
+{"case":"lone-alt","rep":9,"pass":true,"detail":""}
+{"case":"menu-win32","rep":0,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":1,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":2,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":3,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":4,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":5,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":6,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":7,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":8,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}
+{"case":"menu-win32","rep":9,"pass":false,"detail":"labels stuck: Esc went to the menu, not jumpkey (menu open after: false)"}

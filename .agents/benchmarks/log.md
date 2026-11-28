@@ -14,6 +14,108 @@ metal, AC power, **Balanced** power plan. Monitors: 3440×1440 @ 96 dpi
 
 ---
 
+## 2026-11-22: baseline before step 6 (`222443-baseline-step6-pr0`)
+
+**The reference for roadmap step 6.** It replaces `154236-baseline`,
+which predates the step 2 walk speedup. Raw records:
+`baseline-db1e280/` (`iterations.jsonl`, `manifest.json`, and the
+`--check` results as `check-main.jsonl`).
+
+- **App:** `db1e280` (main) plus the step 6 PR 0 harness changes. The
+  only app change is the telemetry-only labels file, off unless
+  `JUMPKEY_BENCH_LABELS` is set (it isn't for the benchmark).
+- **Build:** release with `telemetry`.
+- **Command:** `pick-bench --preset baseline`: every scenario ×
+  `switch-then-press:300`, `switch-then-press:2000`, `repeat-press:300`,
+  active-window scope, 30 presses each.
+- **Run:** 900 presses, 0 timeouts, no power warnings.
+
+New in this run: the responsiveness probe. It sends `WM_NULL` to
+jumpkey's IPC window every 5 ms; the "stall" column is the longest gap
+in which jumpkey's main thread handled no message during a press.
+
+| Scenario | p50 2000 ms | p95 2000 ms | p50 300 ms | repeat-press: cache hits | repeat-press: misses p50 | main-thread stall p50 | jumpkey CPU | target CPU |
+|---|---|---|---|---|---|---|---|---|
+| long-feed | 241 | 248 | 243 | 15/30 at 26 | 233 | 206 | 81 | 235 |
+| dense-list | 163 | 168 | 162 | 14/30 at 19 | 161 | 138 | 58 | 171 |
+| explorer-folder | 162 | 178 | 165 | 15/30 at 25 | 175 | 84 | 50 | 123 |
+| edge-dense-list | 158 | 166 | 154 | 15/30 at 14 | 260 | 137 | 53 | 139 |
+| edge-cases | 134 | 139 | 135 | 15/30 at 26 | 131 | 113 | 54 | 152 |
+| vscode-repo | 72 | 94 | 85 | 14/30 at 21 | 75 | 62 | 38 | 105 |
+| nested-menu | 48 | 53 | 46 | 15/30 at 26 | 44 | 39 | 31 | 72 |
+| tabs | 47 | 54 | 46 | 15/30 at 27 | 35 | 39 | 30 | 73 |
+| form | 42 | 53 | 48 | 15/30 at 26 | 47 | 34 | 29 | 70 |
+| terminal-split | 31 | 36 | 29 | 24/30 at 16 | 31 | 15 | 20 | 18 |
+
+hotkey → visible in ms. CPU is the mean ms per press at 2000 ms. jumpkey
+private bytes were 79–99 MB. Idle CPU in the 10 s after start was 0.06 %
+of one core.
+
+**Where the time goes** (`scripts/telemetry_summary.py`, dense-list at
+2000 ms, p50):
+
+| Step | ms |
+|---|---|
+| Search | 139 |
+| Drawing the first frame | 20 |
+| Showing and taking focus | 5 |
+| Labels, sort, layout | < 1.5 |
+
+The 20 ms frame is mostly clearing the buffer for the whole virtual
+desktop (three monitors, #12, step 7).
+
+**A/A noise floor** (`aa-step6-pr0`: the same exe as A and B, 30 presses
+each, blocks of 5):
+
+| Scenario | p50 A | p50 B | Difference |
+|---|---|---|---|
+| dense-list | 165.2 | 162.3 | 1.8 % |
+| explorer-folder | 162.6 | 158.7 | 2.4 % |
+
+The script's bootstrap marked the Explorer difference (−3.9 ms) as
+significant even though both builds were identical. The bootstrap
+treats presses as independent, but presses within one jumpkey start
+(block) aren't. So for step 6, a change counts only if it beats both the
+A/A floor (about 2.5 % or 4 ms) and the bootstrap interval.
+
+**Live checks** (`pick-bench --check`, 14 cases × 10):
+
+| Result | Cases |
+|---|---|
+| Pass 10/10 | `pick-click`, `pick-modifiers`, `prefix-backspace`, `esc-cancel`, `wheel-cancel`, `click-cancel`, `foreground-cancel`, `window-pick`, `lone-alt` |
+| Fail 10/10 | `focus-kept`, `toggle`, `toggle-during-search`, `rapid-x3`, `menu-win32` |
+
+The failures match the step 6 plan, with one worse than expected: with a
+Win32 popup menu open, the overlay shows but can't take focus. Esc goes
+to the menu, so the labels stay up until a wheel turn. In that state
+`jumpkey --close` doesn't work either, because the overlay's nested loop
+swallows the quit message. Recorded in `bench/check/expected-main.json`.
+
+**Hook cost** (`examples/hook_cost.rs`, 1000 iterations × 2 runs; the
+cost of installing the hook per pick):
+
+| Measure | p50 | p99 |
+|---|---|---|
+| Installing both low-level hooks | 1.5 µs | 5 µs |
+| Removing both | 1.8 µs | 3.4 µs |
+| A full enter + leave through a thread with two message round trips | 22 µs | 39 µs |
+
+**What this shows:**
+
+- **Faster than the old baseline.** Browser pages run at 4–5× the old
+  baseline's speed (step 2), and desktop apps are unchanged.
+- **The search blocks the main thread.** The stall column tracks the
+  search time on browser pages, which is what PR 2 removes.
+- **Explorer's stall is about half its press time (84 of 162 ms).** The
+  main thread handled messages partway through that search, which fits
+  UI Automation's cross-process calls pumping messages on the calling
+  thread. Messages dispatched mid-search are another reason to move
+  searches to a worker.
+- **The hook costs nothing measurable.** Installing it per pick, as
+  decided for step 6, adds tens of microseconds.
+
+---
+
 ## 2026-11-22: hook spike (roadmap step 4)
 
 `examples/hook_spike.rs` on branch `spike/hook`, release build, same

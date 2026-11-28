@@ -1,11 +1,14 @@
 //! Win32 plumbing for the harness. Nothing here knows about jumpkey's
 //! internals; see `bench/README.md` for the contract it relies on.
 
+pub mod checkwin;
 pub mod clock;
 pub mod events;
 pub mod input;
 pub mod machine;
+pub mod probe;
 pub mod process;
+pub mod uia;
 pub mod window;
 
 /// Make the harness per-monitor DPI aware so window rects and monitor

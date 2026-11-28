@@ -8,6 +8,8 @@
 //! collects on-screen, interactable elements (buttons, links, inputs, menu
 //! items, ...) into the platform-agnostic [`crate::Element`] model.
 
+#[cfg(feature = "telemetry")]
+pub(crate) mod bench_labels;
 pub mod config_watcher;
 pub mod hotkey;
 pub mod ipc;

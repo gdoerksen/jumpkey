@@ -72,6 +72,17 @@ args = ["--user-data-dir={profile}", "--no-first-run", "--no-default-browser-che
 window_exe = "vivaldi.exe"
 settle_ms = 3000
 
+# --- check mode only (`pick-bench --check`; skipped by --all and the preset) --
+
+[[scenario]]
+name = "check-page"
+description = "Fixture for the live correctness checks: buttons that report clicks in the page title"
+exe = ["{LOCALAPPDATA}\\Vivaldi\\Application\\vivaldi.exe", "{ProgramFiles}\\Vivaldi\\Application\\vivaldi.exe"]
+args = ["--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check", "--new-window", "{fixtures_url}/check.html"]
+window_exe = "vivaldi.exe"
+settle_ms = 3000
+check_only = true
+
 # --- Edge: same page, for machines/VMs without Vivaldi ----------------------
 
 [[scenario]]

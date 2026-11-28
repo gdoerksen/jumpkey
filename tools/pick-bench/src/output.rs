@@ -111,6 +111,12 @@ pub struct Iteration {
     /// focus; a future no-activate overlay never will, so `None`).
     pub visible_to_foreground_us: Option<u64>,
     pub esc_to_hidden_us: Option<u64>,
+    /// Longest stretch jumpkey's main thread went without handling a
+    /// message, hotkey → hidden (`win::probe`). `None` with `--no-probe`
+    /// or a build without the IPC window.
+    pub main_block_us_max: Option<u64>,
+    /// Probes completed during the press.
+    pub main_probes: u32,
     pub timed_out: bool,
     pub focus_retries: u32,
     /// Raw QPC of the hotkey send (system-wide clock; join key for the

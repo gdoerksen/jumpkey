@@ -37,6 +37,18 @@ pub fn window_pid(h: HWND) -> u32 {
     pid
 }
 
+/// Window title. **Only for the harness's own fixture page** (`check`
+/// mode reads the `chk|…` state the page writes there); never used on,
+/// printed for or stored about any other window.
+pub fn title(raw_hwnd: isize) -> String {
+    let mut buf = [0u16; 512];
+    // SAFETY: valid buffer; a stale HWND yields 0 characters.
+    let n = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetWindowTextW(hwnd(raw_hwnd), &mut buf)
+    };
+    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+}
+
 pub fn foreground() -> isize {
     raw(unsafe { GetForegroundWindow() })
 }

@@ -1,0 +1,18 @@
+# pick-bench config template for `check` mode (`pick-bench --check`).
+#
+# Like the scope templates, but the chords have no Alt: while a menu is
+# open, a chord delivered through RegisterHotKey reaches the app first,
+# and Alt closes Win32 and Chromium menus (review #34). Ctrl and Shift
+# don't, so the menu checks test jumpkey, not the chord.
+
+[hotkeys]
+pick_element = "Ctrl+Shift+F10"
+pick_window = "Ctrl+Shift+F11"
+open_settings = "Ctrl+Shift+F12"
+scroll_mode = "Ctrl+Shift+F9"
+
+[scope]
+mode = "active_window"
+
+[startup]
+launch_at_startup = false
